@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=MintSync & Dupe
+Comment=Find duplicates and sync drives locally
+Exec=bash -c "cd $(dirname %k) && ./run.sh"
+Icon=folder-sync
+Terminal=true
+Type=Application
+Categories=Utility;System;
+Keywords=sync;duplicate;files;
