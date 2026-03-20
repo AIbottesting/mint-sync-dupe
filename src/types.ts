@@ -24,8 +24,13 @@ export interface SyncDiff {
 export interface SyncStats {
   missingInA: number;
   missingInB: number;
+  totalSizeForA: number;
+  totalSizeForB: number;
   totalSizeToSync: number;
   scratchDiskNeeded: number;
+  freeSpaceA: number;
+  freeSpaceB: number;
+  freeSpaceScratch: number;
 }
 
 export interface Session {

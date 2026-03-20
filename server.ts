@@ -5,9 +5,27 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 import crypto from "crypto";
 import os from "os";
+import { Server } from "socket.io";
+import http from "http";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+async function getFreeSpace(dirPath: string): Promise<number> {
+  try {
+    if (!fs.existsSync(dirPath)) return 0;
+    // statfs is available in Node 18.15.0+
+    // @ts-ignore
+    if (typeof fs.promises.statfs === 'function') {
+      // @ts-ignore
+      const stats = await fs.promises.statfs(dirPath);
+      return stats.bsize * stats.bavail;
+    }
+  } catch (e) {
+    console.error(`Error getting free space for ${dirPath}:`, e);
+  }
+  return 0;
+}
 
 // Helper to get file hash (SHA-256)
 function getFileHash(filePath: string): Promise<string> {
@@ -15,16 +33,26 @@ function getFileHash(filePath: string): Promise<string> {
     const hash = crypto.createHash('sha256');
     const stream = fs.createReadStream(filePath);
     stream.on('error', err => reject(err));
-    stream.on('data', chunk => hash.update(chunk));
+    stream.on('data', chunk => {
+      if (isScanningStopped) {
+        stream.destroy();
+        reject(new Error("Scan stopped by user"));
+      } else {
+        hash.update(chunk);
+      }
+    });
     stream.on('end', () => resolve(hash.digest('hex')));
   });
 }
 
 // Helper to recursively walk directories
+let isScanningStopped = false;
+
 async function walkDir(dir: string, fileList: any[] = []) {
   try {
     const files = await fs.promises.readdir(dir);
     for (const file of files) {
+      if (isScanningStopped) throw new Error("Scan stopped by user");
       const filePath = path.join(dir, file);
       try {
         const stat = await fs.promises.stat(filePath);
@@ -69,17 +97,50 @@ function setupTestDirectories() {
   fs.writeFileSync(path.join(driveB, 'duplicate1.txt'), 'This is a duplicate file content.');
 }
 
-async function moveFile(src: string, dest: string) {
-  try {
-    await fs.promises.rename(src, dest);
-  } catch (error: any) {
-    if (error.code === 'EXDEV') {
-      // Cross-device move: copy and then delete
-      await fs.promises.copyFile(src, dest);
-      await fs.promises.unlink(src);
-    } else {
-      throw error;
+async function moveFile(src: string, dest: string, verify = true) {
+  if (verify) {
+    const srcHash = await getFileHash(src);
+    try {
+      await fs.promises.rename(src, dest);
+      const destHash = await getFileHash(dest);
+      if (srcHash !== destHash) {
+        throw new Error(`Verification failed for ${path.basename(src)}. Integrity check failed after move.`);
+      }
+    } catch (error: any) {
+      if (error.code === 'EXDEV') {
+        // Cross-device move: copy, verify, then delete
+        await fs.promises.copyFile(src, dest);
+        const destHash = await getFileHash(dest);
+        if (srcHash !== destHash) {
+          if (fs.existsSync(dest)) await fs.promises.unlink(dest);
+          throw new Error(`Verification failed for ${path.basename(src)}. Integrity check failed during cross-device transfer.`);
+        }
+        await fs.promises.unlink(src);
+      } else {
+        throw error;
+      }
     }
+  } else {
+    try {
+      await fs.promises.rename(src, dest);
+    } catch (error: any) {
+      if (error.code === 'EXDEV') {
+        await fs.promises.copyFile(src, dest);
+        await fs.promises.unlink(src);
+      } else {
+        throw error;
+      }
+    }
+  }
+}
+
+async function copyFileWithVerification(src: string, dest: string) {
+  const srcHash = await getFileHash(src);
+  await fs.promises.copyFile(src, dest);
+  const destHash = await getFileHash(dest);
+  if (srcHash !== destHash) {
+    if (fs.existsSync(dest)) await fs.promises.unlink(dest);
+    throw new Error(`Verification failed for ${path.basename(src)}. Integrity check failed during copy.`);
   }
 }
 
@@ -87,9 +148,23 @@ async function startServer() {
   setupTestDirectories();
 
   const app = express();
+  const server = http.createServer(app);
+  const io = new Server(server);
   const PORT = 3000;
 
   app.use(express.json());
+
+  io.on('connection', (socket) => {
+    console.log('Client connected for progress updates');
+  });
+
+  const reportProgress = (current: number, total: number, message: string) => {
+    io.emit('scan-progress', { current, total, message });
+  };
+
+  const reportStatus = (message: string) => {
+    io.emit('scan-status', { message });
+  };
 
   // API: Get test paths for the preview environment
   app.get("/api/test-paths", (req, res) => {
@@ -121,6 +196,43 @@ async function startServer() {
         folders,
         sep: path.sep
       });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // API: Open file with default OS program
+  app.post("/api/open-file", async (req, res) => {
+    const { filePath } = req.body;
+    if (!filePath || !fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    const command = process.platform === 'win32' ? 'start ""' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    
+    try {
+      // Use double quotes around the path to handle spaces
+      const exec = (await import('child_process')).exec;
+      exec(`${command} "${filePath}"`);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // API: Open folder in OS file explorer
+  app.post("/api/open-folder", async (req, res) => {
+    const { folderPath } = req.body;
+    if (!folderPath || !fs.existsSync(folderPath)) {
+      return res.status(404).json({ error: "Folder not found" });
+    }
+
+    const command = process.platform === 'win32' ? 'explorer' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    
+    try {
+      const exec = (await import('child_process')).exec;
+      exec(`${command} "${folderPath}"`);
+      res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -171,8 +283,15 @@ async function startServer() {
     }
   });
 
+  // API: Stop scan
+  app.post("/api/stop-scan", (req, res) => {
+    isScanningStopped = true;
+    res.json({ success: true });
+  });
+
   // API: Scan for duplicates
   app.post("/api/scan-duplicates", async (req, res) => {
+    isScanningStopped = false;
     try {
       const { directory } = req.body;
       if (!fs.existsSync(directory)) {
@@ -184,45 +303,56 @@ async function startServer() {
       // Group by size first (optimization)
       const sizeGroups: Record<number, any[]> = {};
       for (const f of allFiles) {
+        if (isScanningStopped) throw new Error("Scan stopped by user");
         if (!sizeGroups[f.size]) sizeGroups[f.size] = [];
         sizeGroups[f.size].push(f);
       }
 
       const duplicateGroups = [];
+      const groupsToHash = Object.values(sizeGroups).filter(g => g.length > 1);
+      const totalFilesToHash = groupsToHash.reduce((acc, g) => acc + g.length, 0);
+      let hashedCount = 0;
       
       // Only hash files that have the same size
-      for (const size in sizeGroups) {
-        const files = sizeGroups[size];
-        if (files.length > 1) {
-          const hashGroups: Record<string, any[]> = {};
-          for (const f of files) {
-            const hash = await getFileHash(f.path);
-            f.hash = hash;
-            if (!hashGroups[hash]) hashGroups[hash] = [];
-            hashGroups[hash].push(f);
-          }
-          
-          for (const hash in hashGroups) {
-            if (hashGroups[hash].length > 1) {
-              duplicateGroups.push({
-                hash,
-                files: hashGroups[hash]
-              });
-            }
+      for (const files of groupsToHash) {
+        if (isScanningStopped) throw new Error("Scan stopped by user");
+        const hashGroups: Record<string, any[]> = {};
+        for (const f of files) {
+          if (isScanningStopped) throw new Error("Scan stopped by user");
+          reportProgress(hashedCount, totalFilesToHash, `Hashing ${f.name}...`);
+          const hash = await getFileHash(f.path);
+          f.hash = hash;
+          if (!hashGroups[hash]) hashGroups[hash] = [];
+          hashGroups[hash].push(f);
+          hashedCount++;
+        }
+        
+        for (const hash in hashGroups) {
+          if (isScanningStopped) throw new Error("Scan stopped by user");
+          if (hashGroups[hash].length > 1) {
+            duplicateGroups.push({
+              hash,
+              files: hashGroups[hash]
+            });
           }
         }
       }
 
+      reportProgress(totalFilesToHash, totalFilesToHash, "Scan complete");
       res.json({ duplicateGroups });
     } catch (error: any) {
+      if (error.message === "Scan stopped by user") {
+        return res.json({ duplicateGroups: [], stopped: true });
+      }
       res.status(500).json({ error: error.message });
     }
   });
 
   // API: Scan for sync
   app.post("/api/scan-sync", async (req, res) => {
+    isScanningStopped = false;
     try {
-      const { sourceDir, targetDir } = req.body;
+      const { sourceDir, targetDir, scratchDiskPath } = req.body;
       if (!fs.existsSync(sourceDir) || !fs.existsSync(targetDir)) {
         return res.status(400).json({ error: "One or both directories do not exist" });
       }
@@ -237,44 +367,78 @@ async function startServer() {
       const sourceMap = new Map(sourceFiles.map(f => [path.relative(sourceDir, f.path), f]));
       const targetMap = new Map(targetFiles.map(f => [path.relative(targetDir, f.path), f]));
 
+      const totalToCompare = sourceMap.size;
+      let comparedCount = 0;
+
       // Check source against target
       for (const [relPath, sFile] of sourceMap.entries()) {
+        if (isScanningStopped) throw new Error("Scan stopped by user");
+        comparedCount++;
+        reportProgress(comparedCount, totalToCompare, `Comparing ${sFile.name}...`);
+        
         const tFile = targetMap.get(relPath);
         if (!tFile) {
           diffs.push({ type: 'missing-in-b', fileA: sFile, relPath });
           totalSizeToSync += sFile.size;
         } else {
-          // Compare hashes if files exist in both
-          const sHash = await getFileHash(sFile.path);
-          const tHash = await getFileHash(tFile.path);
-          if (sHash !== tHash) {
-            diffs.push({ type: 'different-version', fileA: sFile, fileB: tFile, relPath });
-            totalSizeToSync += sFile.size;
+          // Optimization: Check size and mtime first
+          const sMtime = new Date(sFile.lastModified).getTime();
+          const tMtime = new Date(tFile.lastModified).getTime();
+          
+          if (sFile.size !== tFile.size || Math.abs(sMtime - tMtime) > 1000) {
+            // Only hash if metadata differs or if we want to be 100% sure
+            // For now, let's still hash but the user will see progress
+            const sHash = await getFileHash(sFile.path);
+            const tHash = await getFileHash(tFile.path);
+            if (sHash !== tHash) {
+              diffs.push({ type: 'different-version', fileA: sFile, fileB: tFile, relPath });
+              totalSizeToSync += sFile.size;
+            }
           }
         }
       }
 
       // Check target against source
       for (const [relPath, tFile] of targetMap.entries()) {
+        if (isScanningStopped) throw new Error("Scan stopped by user");
         if (!sourceMap.has(relPath)) {
           diffs.push({ type: 'missing-in-a', fileB: tFile, relPath });
           totalSizeToSync += tFile.size;
         }
       }
 
+      reportProgress(totalToCompare, totalToCompare, "Sync scan complete");
       const missingInA = diffs.filter(d => d.type === 'missing-in-a').length;
       const missingInB = diffs.filter(d => d.type === 'missing-in-b').length;
+      
+      const totalSizeForA = diffs.filter(d => d.type === 'missing-in-a').reduce((acc, d) => acc + (d.fileB?.size || 0), 0);
+      const totalSizeForB = diffs.filter(d => d.type === 'missing-in-b').reduce((acc, d) => acc + (d.fileA?.size || 0), 0);
+
+      // Get free space for all drives
+      const [freeSpaceA, freeSpaceB, freeSpaceScratch] = await Promise.all([
+        getFreeSpace(sourceDir),
+        getFreeSpace(targetDir),
+        scratchDiskPath ? getFreeSpace(scratchDiskPath) : Promise.resolve(0)
+      ]);
 
       res.json({
         diffs,
         stats: {
           missingInA,
           missingInB,
+          totalSizeForA,
+          totalSizeForB,
           totalSizeToSync,
-          scratchDiskNeeded: totalSizeToSync * 1.1
+          scratchDiskNeeded: totalSizeToSync * 1.1,
+          freeSpaceA,
+          freeSpaceB,
+          freeSpaceScratch
         }
       });
     } catch (error: any) {
+      if (error.message === "Scan stopped by user") {
+        return res.json({ diffs: [], stats: null, stopped: true });
+      }
       res.status(500).json({ error: error.message });
     }
   });
@@ -400,9 +564,11 @@ async function startServer() {
           }
           
           if (isMove) {
-            await moveFile(src, dest);
+            reportStatus(`Moving & Verifying ${path.basename(src)}...`);
+            await moveFile(src, dest, true);
           } else {
-            await fs.promises.copyFile(src, dest);
+            reportStatus(`Copying & Verifying ${path.basename(src)}...`);
+            await copyFileWithVerification(src, dest);
           }
         }
       }
@@ -440,7 +606,7 @@ async function startServer() {
     }
   });
 
-  // API: Save session
+  // API: Save & Load session
   app.post("/api/save-session", async (req, res) => {
     try {
       const { name, state } = req.body;
@@ -530,7 +696,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

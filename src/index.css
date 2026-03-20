@@ -10,3 +10,9 @@
   --color-mint-ink: #141414;
   --color-mint-paper: #E4E3E0;
 }
+
+@variant dark (&:where(.dark, .dark *));
+
+.dark {
+  color-scheme: dark;
+}

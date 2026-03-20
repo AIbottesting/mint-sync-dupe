@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { io } from 'socket.io-client';
 import { 
   Search, 
   RefreshCw, 
@@ -7,6 +8,7 @@ import {
   HardDrive, 
   File, 
   ChevronRight, 
+  ChevronDown,
   CheckCircle2, 
   AlertCircle, 
   ArrowRightLeft,
@@ -20,7 +22,10 @@ import {
   Copy,
   FolderOpen,
   Save,
-  AlertTriangle
+  AlertTriangle,
+  ExternalLink,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileItem, DuplicateGroup, SyncDiff, SyncStats, Session } from './types';
@@ -111,6 +116,54 @@ export default function App() {
   const [showSessionModal, setShowSessionModal] = useState(false);
   const [sessionName, setSessionName] = useState('');
   const [isLoadingSession, setIsLoadingSession] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, path: string } | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('darkMode');
+      if (saved !== null) return saved === 'true';
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+    localStorage.setItem('darkMode', isDarkMode.toString());
+  }, [isDarkMode]);
+
+  const groupedDiffs: Record<string, number[]> = useMemo(() => {
+    const groups: Record<string, number[]> = {};
+    syncDiffs.forEach((diff, index) => {
+      const parts = diff.relPath.split('/');
+      const parent = parts.length > 1 ? parts.slice(0, -1).join('/') : 'Root';
+      if (!groups[parent]) groups[parent] = [];
+      groups[parent].push(index);
+    });
+    return groups;
+  }, [syncDiffs]);
+
+  const toggleFolderSelection = (indices: number[]) => {
+    const allSelected = indices.every(idx => selectedDiffs.has(idx));
+    const newSelection = new Set(selectedDiffs);
+    if (allSelected) {
+      indices.forEach(idx => newSelection.delete(idx));
+    } else {
+      indices.forEach(idx => newSelection.add(idx));
+    }
+    setSelectedDiffs(newSelection);
+  };
+
+  const toggleFolderExpansion = (folder: string) => {
+    const newExpanded = new Set(expandedFolders);
+    if (newExpanded.has(folder)) newExpanded.delete(folder);
+    else newExpanded.add(folder);
+    setExpandedFolders(newExpanded);
+  };
 
   // Progress State
   const [progress, setProgress] = useState<{ total: number; current: number; message: string; isVisible: boolean }>({
@@ -121,7 +174,35 @@ export default function App() {
   });
 
   useEffect(() => {
+    const socket = io();
+    socket.on('scan-progress', (data) => {
+      setProgress({
+        total: data.total,
+        current: data.current,
+        message: data.message,
+        isVisible: true
+      });
+    });
+    socket.on('scan-status', (data) => {
+      setProgress(prev => ({
+        ...prev,
+        message: data.message,
+        isVisible: true
+      }));
+    });
+    return () => {
+      socket.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
     fetchSessions();
+  }, []);
+
+  useEffect(() => {
+    const handleClick = () => setContextMenu(null);
+    window.addEventListener('click', handleClick);
+    return () => window.removeEventListener('click', handleClick);
   }, []);
 
   const fetchSessions = async () => {
@@ -159,7 +240,7 @@ export default function App() {
 
     // Check if directories exist before saving
     if (!sourceDir || !targetDir) {
-      const proceed = confirm("Source or Target drive is not set. Save session anyway?");
+      const proceed = confirm("Source or Target drive is not set. Save & Load session anyway?");
       if (!proceed) return;
     }
 
@@ -197,7 +278,7 @@ export default function App() {
         fetchSessions();
       }
     } catch (error) {
-      alert("Failed to save session");
+      alert("Failed to save & load session");
     }
   };
 
@@ -267,7 +348,19 @@ export default function App() {
     setPickerOpen(false);
   };
 
+  const handleStopScan = async () => {
+    try {
+      await fetch('/api/stop-scan', { method: 'POST' });
+    } catch (error) {
+      console.error("Failed to stop scan:", error);
+    }
+  };
+
   const handleScanDuplicates = async () => {
+    if (isScanning) {
+      handleStopScan();
+      return;
+    }
     setIsScanning(true);
     setDuplicateGroups([]);
     
@@ -281,39 +374,54 @@ export default function App() {
       const data = await response.json();
       if (data.error) {
         alert(data.error);
+      } else if (data.stopped) {
+        console.log("Scan stopped by user");
+        setProgress(prev => ({ ...prev, isVisible: false }));
       } else {
         setDuplicateGroups(data.duplicateGroups);
+        setProgress(prev => ({ ...prev, isVisible: false }));
       }
     } catch (error) {
       console.error("Scan failed:", error);
       alert("Failed to connect to local scanner.");
+      setProgress(prev => ({ ...prev, isVisible: false }));
     } finally {
       setIsScanning(false);
     }
   };
 
   const handleScanSync = async () => {
+    if (isScanning) {
+      handleStopScan();
+      return;
+    }
     setIsScanning(true);
     setSyncDiffs([]);
     setSyncStats(null);
+    setExpandedFolders(new Set());
     
     try {
       const response = await fetch('/api/scan-sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceDir, targetDir })
+        body: JSON.stringify({ sourceDir, targetDir, scratchDiskPath })
       });
       
       const data = await response.json();
       if (data.error) {
         alert(data.error);
+      } else if (data.stopped) {
+        console.log("Sync scan stopped by user");
+        setProgress(prev => ({ ...prev, isVisible: false }));
       } else {
         setSyncDiffs(data.diffs);
         setSyncStats(data.stats);
+        setProgress(prev => ({ ...prev, isVisible: false }));
       }
     } catch (error) {
       console.error("Sync scan failed:", error);
       alert("Failed to connect to local scanner.");
+      setProgress(prev => ({ ...prev, isVisible: false }));
     } finally {
       setIsScanning(false);
     }
@@ -411,6 +519,28 @@ export default function App() {
     }).filter(op => op !== null);
 
     if (operations.length === 0) return;
+
+    // Check for free space warnings
+    if (syncStats) {
+      const mirrorToB = operations.some(op => op.action === 'mirror-to-b');
+      const mirrorToA = operations.some(op => op.action === 'mirror-to-a');
+      const moveToScratch = operations.some(op => op.action === 'move-to-scratch');
+
+      let warningMsg = '';
+      if (mirrorToB && syncStats.totalSizeToSync > syncStats.freeSpaceB) {
+        warningMsg += `Warning: Drive B may not have enough space (${formatBytes(syncStats.freeSpaceB)} available, ${formatBytes(syncStats.totalSizeToSync)} needed).\n`;
+      }
+      if (mirrorToA && syncStats.totalSizeToSync > syncStats.freeSpaceA) {
+        warningMsg += `Warning: Drive A may not have enough space (${formatBytes(syncStats.freeSpaceA)} available, ${formatBytes(syncStats.totalSizeToSync)} needed).\n`;
+      }
+      if (moveToScratch && syncStats.totalSizeToSync > syncStats.freeSpaceScratch) {
+        warningMsg += `Warning: Scratch Disk may not have enough space (${formatBytes(syncStats.freeSpaceScratch)} available, ${formatBytes(syncStats.totalSizeToSync)} needed).\n`;
+      }
+
+      if (warningMsg && !confirm(`${warningMsg}\nDo you want to proceed anyway?`)) {
+        return;
+      }
+    }
 
     setProgress({ total: operations.length, current: 0, message: 'Synchronizing drives...', isVisible: true });
 
@@ -592,10 +722,42 @@ export default function App() {
     setSelectedDiffs(new Set());
   };
 
+  const handleOpenFile = async (filePath: string) => {
+    try {
+      const response = await fetch('/api/open-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath })
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        alert(data.error || "Failed to open file.");
+      }
+    } catch (error) {
+      alert("Error opening file.");
+    }
+  };
+
+  const handleOpenFolder = async (folderPath: string) => {
+    try {
+      const response = await fetch('/api/open-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderPath })
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        alert(data.error || "Failed to open folder.");
+      }
+    } catch (error) {
+      alert("Error opening folder.");
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-[#E4E3E0] text-[#141414] font-sans selection:bg-[#141414] selection:text-[#E4E3E0]">
+    <div className={`min-h-screen bg-[#E4E3E0] dark:bg-zinc-950 text-[#141414] dark:text-zinc-100 font-sans selection:bg-[#141414] dark:selection:bg-zinc-100 selection:text-[#E4E3E0] dark:selection:text-zinc-950 transition-colors duration-300 ${isDarkMode ? 'dark' : ''}`}>
       {/* Sidebar / Navigation */}
-      <div className="fixed left-0 top-0 h-full w-64 border-r border-[#141414] bg-[#E4E3E0] z-10 hidden md:flex flex-col">
+      <div className="fixed left-0 top-0 h-full w-64 border-r border-[#141414] dark:border-zinc-800 bg-[#E4E3E0] dark:bg-zinc-900 z-10 hidden md:flex flex-col">
         <div className="p-8 border-bottom border-[#141414]">
           <h1 className="text-2xl font-serif italic tracking-tight">MintSync</h1>
           <p className="text-[10px] uppercase tracking-widest opacity-50 mt-1">Local File Utility</p>
@@ -618,13 +780,13 @@ export default function App() {
           </button>
         </nav>
 
-        <div className="p-8 border-t border-[#141414] space-y-4">
+        <div className="p-8 border-t border-[#141414] dark:border-zinc-800 space-y-4">
           <button 
             onClick={() => setShowSessionModal(true)}
             className="w-full flex items-center gap-3 px-4 py-2 border border-mint-purple text-mint-purple hover:bg-mint-purple hover:text-white transition-all text-[10px] uppercase tracking-widest font-bold"
           >
             <Save size={14} />
-            <span>Save Session</span>
+            <span>Save & Load Session</span>
           </button>
           
           <div className="flex items-center gap-3 opacity-50">
@@ -637,26 +799,35 @@ export default function App() {
       {/* Main Content */}
       <main className="md:ml-64 p-8 min-h-screen">
         <header className="flex justify-between items-end mb-12">
-          <div>
-            <h2 className={`text-4xl font-serif italic mb-2 relative inline-block`}>
-              {activeTab === 'duplicates' ? 'Duplicate Analysis' : 'Mirror Sync'}
-              <div className={`absolute -bottom-1 left-0 h-1 w-full ${activeTab === 'duplicates' ? 'bg-mint-purple' : 'bg-mint-blue'} opacity-30`} />
-            </h2>
-            <p className="text-sm opacity-60">
-              {activeTab === 'duplicates' 
-                ? 'Scan and manage redundant files across your system locally.' 
-                : 'Synchronize two drives with intelligent scratch-disk management.'}
-            </p>
+          <div className="flex items-end gap-8">
+            <div>
+              <h2 className={`text-4xl font-serif italic mb-2 relative inline-block`}>
+                {activeTab === 'duplicates' ? 'Duplicate Analysis' : 'Mirror Sync'}
+                <div className={`absolute -bottom-1 left-0 h-1 w-full ${activeTab === 'duplicates' ? 'bg-mint-purple' : 'bg-mint-blue'} opacity-30`} />
+              </h2>
+              <p className="text-sm opacity-60">
+                {activeTab === 'duplicates' 
+                  ? 'Scan and manage redundant files across your system locally.' 
+                  : 'Synchronize two drives with intelligent scratch-disk management.'}
+              </p>
+            </div>
+
+            <button
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className="p-3 rounded-full border border-[#141414]/10 dark:border-white/10 hover:bg-[#141414]/5 dark:hover:bg-white/5 transition-all mb-1"
+              title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            >
+              {isDarkMode ? <Sun size={20} className="text-amber-400" /> : <Moon size={20} className="text-mint-purple" />}
+            </button>
           </div>
           
           <button 
             onClick={activeTab === 'duplicates' ? handleScanDuplicates : handleScanSync}
-            disabled={isScanning}
-            className={`group relative px-8 py-3 ${activeTab === 'duplicates' ? 'bg-mint-purple' : 'bg-mint-blue'} text-white text-sm font-medium overflow-hidden shadow-lg hover:scale-105 transition-transform`}
+            className={`group relative px-8 py-3 ${isScanning ? 'bg-red-500' : (activeTab === 'duplicates' ? 'bg-mint-purple' : 'bg-mint-blue')} text-white text-sm font-medium overflow-hidden shadow-lg hover:scale-105 transition-transform`}
           >
             <span className="relative z-10 flex items-center gap-2">
-              {isScanning ? <RefreshCw className="animate-spin" size={16} /> : <Search size={16} />}
-              {isScanning ? 'Scanning Local Disk...' : 'Start Scan'}
+              {isScanning ? <X size={16} /> : <Search size={16} />}
+              {isScanning ? 'Stop Scan' : 'Start Scan'}
             </span>
           </button>
         </header>
@@ -670,15 +841,15 @@ export default function App() {
               exit={{ opacity: 0, y: -20 }}
               className="space-y-8"
             >
-              <div className="p-6 border border-[#141414] bg-white flex items-center gap-4">
+              <div className="p-6 border border-[#141414] dark:border-zinc-800 bg-white dark:bg-zinc-900 flex items-center gap-4">
                 <label className="text-[10px] uppercase tracking-widest opacity-50 whitespace-nowrap">Directory to Scan:</label>
                 <div className="flex-1 flex items-center gap-2">
-                  <div className="flex-1 px-4 py-2 border border-[#141414] font-mono text-xs bg-[#141414]/5 truncate">
+                  <div className="flex-1 px-4 py-2 border border-[#141414] dark:border-zinc-800 font-mono text-xs bg-[#141414]/5 dark:bg-white/5 truncate">
                     {scanDir || 'No directory selected'}
                   </div>
                   <button 
                     onClick={() => openPicker('scan')}
-                    className="p-2 border border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
+                    className="p-2 border border-[#141414] dark:border-zinc-800 hover:bg-[#141414] hover:text-[#E4E3E0] dark:hover:bg-zinc-100 dark:hover:text-zinc-950 transition-colors"
                     title="Browse"
                   >
                     <FolderOpen size={16} />
@@ -731,34 +902,59 @@ export default function App() {
                       {group.files.map(file => (
                         <div 
                           key={file.id} 
-                          className={`grid ${wrapPaths ? 'grid-cols-[40px_2.5fr_1fr_1fr_1fr]' : 'grid-cols-[40px_1.5fr_1fr_1fr_1fr]'} p-4 transition-colors hover:bg-mint-purple/10 group cursor-pointer ${selectedFiles.has(file.id) ? 'bg-mint-purple/20 border-l-4 border-mint-purple' : ''}`}
+                          className={`grid ${wrapPaths ? 'grid-cols-[40px_2.5fr_1fr_1fr_1fr]' : 'grid-cols-[40px_1.5fr_1fr_1fr_1fr]'} p-4 transition-colors hover:bg-mint-purple/10 dark:hover:bg-mint-purple/20 group cursor-pointer ${selectedFiles.has(file.id) ? 'bg-mint-purple/20 dark:bg-mint-purple/30 border-l-4 border-mint-purple' : ''}`}
                           onClick={() => toggleFileSelection(file.id)}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            setContextMenu({ x: e.clientX, y: e.clientY, path: file.path });
+                          }}
                         >
                           <div className="flex items-center justify-center">
-                            <div className={`w-4 h-4 border border-current flex items-center justify-center ${selectedFiles.has(file.id) ? 'bg-mint-purple border-mint-purple' : ''}`}>
+                            <div className={`w-4 h-4 border border-current flex items-center justify-center ${selectedFiles.has(file.id) ? 'bg-mint-purple border-mint-purple' : 'text-[#141414] dark:text-zinc-100'}`}>
                               {selectedFiles.has(file.id) && <Check size={12} className="text-white" />}
                             </div>
                           </div>
                           <div className="flex flex-col overflow-hidden py-1">
-                            <span className="font-medium truncate">{file.name}</span>
-                            <span className={`text-[10px] opacity-50 font-mono ${wrapPaths ? 'break-all whitespace-normal leading-tight mt-1' : 'truncate'}`}>
+                            <span className="font-medium truncate text-[#141414] dark:text-zinc-100">{file.name}</span>
+                            <span className={`text-[10px] opacity-50 font-mono text-[#141414] dark:text-zinc-100 ${wrapPaths ? 'break-all whitespace-normal leading-tight mt-1' : 'truncate'}`}>
                               {file.path}
                             </span>
                           </div>
-                          <div className="flex items-center font-mono text-xs">{formatBytes(file.size)}</div>
-                          <div className="flex items-center font-mono text-xs">{new Date(file.lastModified).toLocaleDateString()}</div>
-                          <div className="flex items-center gap-4">
+                          <div className="flex items-center font-mono text-xs text-[#141414] dark:text-zinc-100">{formatBytes(file.size)}</div>
+                          <div className="flex items-center font-mono text-xs text-[#141414] dark:text-zinc-100">{new Date(file.lastModified).toLocaleDateString()}</div>
+                          <div className="flex items-center gap-2">
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenFile(file.path);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-mint-blue hover:bg-[#E4E3E0] dark:hover:bg-zinc-800 p-1 rounded text-[#141414] dark:text-zinc-100"
+                              title="Open File"
+                            >
+                              <ExternalLink size={14} />
+                            </button>
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const folderPath = file.path.substring(0, file.path.lastIndexOf(file.path.includes('\\') ? '\\' : '/'));
+                                handleOpenFolder(folderPath);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-mint-blue hover:bg-[#E4E3E0] dark:hover:bg-zinc-800 p-1 rounded text-[#141414] dark:text-zinc-100"
+                              title="Open Folder"
+                            >
+                              <FolderOpen size={14} />
+                            </button>
                             <button 
                               onClick={(e) => {
                                 e.stopPropagation();
                                 navigator.clipboard.writeText(file.path);
                               }}
-                              className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-[#141414] hover:bg-[#E4E3E0] p-1 rounded"
+                              className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-[#141414] dark:hover:text-zinc-100 hover:bg-[#E4E3E0] dark:hover:bg-zinc-800 p-1 rounded text-[#141414] dark:text-zinc-100"
                               title="Copy Path"
                             >
                               <Copy size={14} />
                             </button>
-                            <button className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-red-500">
+                            <button className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-red-500 text-[#141414] dark:text-zinc-100">
                               <Trash2 size={16} />
                             </button>
                           </div>
@@ -817,30 +1013,36 @@ export default function App() {
               {/* Sync Configuration */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 <div className="lg:col-span-2 space-y-6">
-                  <div className="flex flex-col gap-4 p-8 border border-[#141414] bg-[#141414]/5 relative overflow-hidden">
+                  <div className="flex flex-col gap-4 p-8 border border-[#141414] dark:border-zinc-800 bg-[#141414]/5 dark:bg-white/5 relative overflow-hidden">
+                    <div className="absolute top-0 right-0 p-2">
+                      <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 rounded-sm border border-emerald-200 dark:border-emerald-900/50">
+                        <CheckCircle2 size={10} />
+                        <span className="text-[8px] uppercase tracking-wider font-bold">Integrity Verification Active</span>
+                      </div>
+                    </div>
                     <div className="flex items-center gap-4 w-full">
-                      <label className="text-[10px] uppercase tracking-widest opacity-50 w-24">Source (A)</label>
+                      <label className="text-[10px] uppercase tracking-widest opacity-50 w-24 text-[#141414] dark:text-zinc-100">Source (A)</label>
                       <div className="flex-1 flex items-center gap-2">
-                        <div className="flex-1 px-4 py-2 border border-[#141414] font-mono text-xs bg-white truncate">
+                        <div className="flex-1 px-4 py-2 border border-[#141414] dark:border-zinc-800 font-mono text-xs bg-white dark:bg-zinc-900 text-[#141414] dark:text-zinc-100 truncate">
                           {sourceDir || 'Select Source'}
                         </div>
                         <button 
                           onClick={() => openPicker('source')}
-                          className="p-2 border border-[#141414] bg-white hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
+                          className="p-2 border border-[#141414] dark:border-zinc-800 bg-white dark:bg-zinc-900 text-[#141414] dark:text-zinc-100 hover:bg-[#141414] dark:hover:bg-zinc-100 hover:text-[#E4E3E0] dark:hover:text-zinc-900 transition-colors"
                         >
                           <FolderOpen size={16} />
                         </button>
                       </div>
                     </div>
                     <div className="flex items-center gap-4 w-full">
-                      <label className="text-[10px] uppercase tracking-widest opacity-50 w-24">Target (B)</label>
+                      <label className="text-[10px] uppercase tracking-widest opacity-50 w-24 text-[#141414] dark:text-zinc-100">Target (B)</label>
                       <div className="flex-1 flex items-center gap-2">
-                        <div className="flex-1 px-4 py-2 border border-[#141414] font-mono text-xs bg-white truncate">
+                        <div className="flex-1 px-4 py-2 border border-[#141414] dark:border-zinc-800 font-mono text-xs bg-white dark:bg-zinc-900 text-[#141414] dark:text-zinc-100 truncate">
                           {targetDir || 'Select Target'}
                         </div>
                         <button 
                           onClick={() => openPicker('target')}
-                          className="p-2 border border-[#141414] bg-white hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
+                          className="p-2 border border-[#141414] dark:border-zinc-800 bg-white dark:bg-zinc-900 text-[#141414] dark:text-zinc-100 hover:bg-[#141414] dark:hover:bg-zinc-100 hover:text-[#E4E3E0] dark:hover:text-zinc-900 transition-colors"
                         >
                           <FolderOpen size={16} />
                         </button>
@@ -849,25 +1051,65 @@ export default function App() {
                   </div>
 
                   {syncStats && (
-                    <div className="grid grid-cols-3 gap-4">
-                      <div className="p-6 border border-mint-blue/20 bg-mint-blue/5">
-                        <label className="text-[10px] uppercase tracking-widest text-mint-blue font-bold block mb-2">Missing in A</label>
-                        <span className="text-3xl font-serif italic text-mint-blue">{syncStats.missingInA}</span>
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="p-6 border border-mint-blue/20 bg-mint-blue/5 dark:bg-mint-blue/10">
+                          <div className="flex justify-between items-start mb-2">
+                            <label className="text-[10px] uppercase tracking-widest text-mint-blue font-bold">New for Drive A</label>
+                            <span className="text-xs font-mono text-mint-blue font-bold">Size Needed: {formatBytes(syncStats.totalSizeForA)}</span>
+                          </div>
+                          <span className="text-3xl font-serif italic text-mint-blue">{syncStats.missingInA}</span>
+                        </div>
+                        <div className="p-6 border border-mint-purple/20 bg-mint-purple/5 dark:bg-mint-purple/10">
+                          <div className="flex justify-between items-start mb-2">
+                            <label className="text-[10px] uppercase tracking-widest text-mint-purple font-bold">New for Drive B</label>
+                            <span className="text-xs font-mono text-mint-purple font-bold">Size Needed: {formatBytes(syncStats.totalSizeForB)}</span>
+                          </div>
+                          <span className="text-3xl font-serif italic text-mint-purple">{syncStats.missingInB}</span>
+                        </div>
+                        <div className="p-6 border border-mint-green/20 bg-mint-green text-white shadow-lg dark:shadow-mint-green/20">
+                          <label className="text-[10px] uppercase tracking-widest opacity-80 block mb-2 font-bold">Total Non-Synced Files Size</label>
+                          <span className="text-2xl font-mono font-bold">{formatBytes(syncStats.totalSizeToSync)}</span>
+                        </div>
                       </div>
-                      <div className="p-6 border border-mint-purple/20 bg-mint-purple/5">
-                        <label className="text-[10px] uppercase tracking-widest text-mint-purple font-bold block mb-2">Missing in B</label>
-                        <span className="text-3xl font-serif italic text-mint-purple">{syncStats.missingInB}</span>
-                      </div>
-                      <div className="p-6 border border-mint-green/20 bg-mint-green text-white shadow-lg">
-                        <label className="text-[10px] uppercase tracking-widest opacity-80 block mb-2 font-bold">Sync Volume</label>
-                        <span className="text-2xl font-mono font-bold">{formatBytes(syncStats.totalSizeToSync)}</span>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className={`p-4 border ${syncStats.freeSpaceA < syncStats.totalSizeToSync ? 'border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-900/40' : 'border-[#141414]/10 dark:border-zinc-800 bg-white dark:bg-zinc-900'}`}>
+                          <div className="flex justify-between items-center mb-2">
+                            <label className="text-[10px] uppercase tracking-widest opacity-50 font-bold">Drive A Free Space</label>
+                            {syncStats.freeSpaceA < syncStats.totalSizeToSync && (
+                              <span className="text-[9px] bg-red-500 text-white px-1.5 py-0.5 rounded-full font-bold animate-pulse">Low Space</span>
+                            )}
+                          </div>
+                          <div className="flex items-end gap-2">
+                            <span className={`text-xl font-mono ${syncStats.freeSpaceA < syncStats.totalSizeToSync ? 'text-red-600 dark:text-red-400' : 'text-[#141414] dark:text-zinc-100'}`}>
+                              {formatBytes(syncStats.freeSpaceA)}
+                            </span>
+                            <span className="text-[10px] opacity-40 mb-1">Available</span>
+                          </div>
+                        </div>
+
+                        <div className={`p-4 border ${syncStats.freeSpaceB < syncStats.totalSizeToSync ? 'border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-900/40' : 'border-[#141414]/10 dark:border-zinc-800 bg-white dark:bg-zinc-900'}`}>
+                          <div className="flex justify-between items-center mb-2">
+                            <label className="text-[10px] uppercase tracking-widest opacity-50 font-bold">Drive B Free Space</label>
+                            {syncStats.freeSpaceB < syncStats.totalSizeToSync && (
+                              <span className="text-[9px] bg-red-500 text-white px-1.5 py-0.5 rounded-full font-bold animate-pulse">Low Space</span>
+                            )}
+                          </div>
+                          <div className="flex items-end gap-2">
+                            <span className={`text-xl font-mono ${syncStats.freeSpaceB < syncStats.totalSizeToSync ? 'text-red-600 dark:text-red-400' : 'text-[#141414] dark:text-zinc-100'}`}>
+                              {formatBytes(syncStats.freeSpaceB)}
+                            </span>
+                            <span className="text-[10px] opacity-40 mb-1">Available</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}
                 </div>
 
-                <div className="p-8 border border-[#141414] bg-white space-y-6">
-                  <div className="flex items-center gap-2 text-emerald-600">
+                <div className="p-8 border border-[#141414] dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-6">
+                  <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
                     <Database size={18} />
                     <h3 className="text-sm font-bold uppercase tracking-widest">Scratch Disk Manager</h3>
                   </div>
@@ -876,12 +1118,12 @@ export default function App() {
                     <div className="space-y-2">
                       <label className="text-[10px] uppercase tracking-widest opacity-50">Scratch Path</label>
                       <div className="flex items-center gap-2">
-                        <div className="flex-1 px-4 py-2 border border-[#141414] font-mono text-xs bg-[#141414]/5 truncate">
+                        <div className="flex-1 px-4 py-2 border border-[#141414] dark:border-zinc-800 font-mono text-xs bg-[#141414]/5 dark:bg-white/5 truncate">
                           {scratchDiskPath}
                         </div>
                         <button 
                           onClick={() => openPicker('scratch')}
-                          className="p-2 border border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
+                          className="p-2 border border-[#141414] dark:border-zinc-800 hover:bg-[#141414] dark:hover:bg-zinc-100 hover:text-[#E4E3E0] dark:hover:text-zinc-900 transition-colors"
                         >
                           <FolderOpen size={16} />
                         </button>
@@ -889,14 +1131,27 @@ export default function App() {
                     </div>
                     
                     {syncStats && (
-                      <div className="p-4 bg-mint-blue/5 border border-mint-blue/20 space-y-2">
-                        <div className="flex items-center gap-2 text-mint-blue">
-                          <Info size={14} />
-                          <span className="text-[10px] font-bold uppercase tracking-widest">Space Calculation</span>
+                      <div className="space-y-4">
+                        <div className={`p-4 border ${syncStats.freeSpaceScratch < syncStats.scratchDiskNeeded ? 'border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-900/40' : 'bg-mint-blue/5 dark:bg-mint-blue/10 border-mint-blue/20'} space-y-2`}>
+                          <div className="flex items-center justify-between text-mint-blue">
+                            <div className="flex items-center gap-2">
+                              <Info size={14} />
+                              <span className="text-[10px] font-bold uppercase tracking-widest">Space Calculation</span>
+                            </div>
+                            {syncStats.freeSpaceScratch < syncStats.scratchDiskNeeded && (
+                              <span className="text-[9px] bg-amber-500 text-white px-1.5 py-0.5 rounded-full font-bold">Small Buffer</span>
+                            )}
+                          </div>
+                          <p className="text-xs opacity-80 leading-relaxed">
+                            Recommended: <strong className="text-mint-blue">{formatBytes(syncStats.scratchDiskNeeded)}</strong>
+                          </p>
+                          <div className="pt-2 border-t border-current/10 flex justify-between items-end">
+                            <label className="text-[9px] uppercase tracking-widest opacity-50">Available on Scratch</label>
+                            <span className={`text-sm font-mono font-bold ${syncStats.freeSpaceScratch < syncStats.scratchDiskNeeded ? 'text-amber-700 dark:text-amber-400' : 'text-mint-blue'}`}>
+                              {formatBytes(syncStats.freeSpaceScratch)}
+                            </span>
+                          </div>
                         </div>
-                        <p className="text-xs opacity-80 leading-relaxed">
-                          A scratch disk of at least <strong className="text-mint-blue">{formatBytes(syncStats.scratchDiskNeeded)}</strong> is recommended for safe staging.
-                        </p>
                       </div>
                     )}
                   </div>
@@ -918,17 +1173,17 @@ export default function App() {
                         }}
                         className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[10px] uppercase tracking-widest font-bold transition-all ${
                           scratchFiles.length > 0 
-                            ? 'bg-amber-100 text-amber-700 border border-amber-200' 
-                            : 'bg-zinc-100 text-zinc-400 border border-zinc-200'
+                            ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/50' 
+                            : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 border border-zinc-200 dark:border-zinc-700'
                         }`}
                       >
                         <Database size={12} />
                         {scratchFiles.length > 0 ? 'Scratch is Loaded' : 'Scratch is Empty'}
-                        <div className={`w-2 h-2 rounded-full ${scratchFiles.length > 0 ? 'bg-amber-500 animate-pulse' : 'bg-zinc-300'}`} />
+                        <div className={`w-2 h-2 rounded-full ${scratchFiles.length > 0 ? 'bg-amber-500 animate-pulse' : 'bg-zinc-300 dark:bg-zinc-600'}`} />
                       </button>
                       <button 
                         onClick={fetchScratchFiles}
-                        className="p-1.5 rounded-full hover:bg-amber-100 text-amber-700 transition-colors"
+                        className="p-1.5 rounded-full hover:bg-amber-100 dark:hover:bg-amber-900/30 text-amber-700 dark:text-amber-400 transition-colors"
                         title="Refresh Scratch Disk"
                       >
                         <RefreshCw size={12} />
@@ -938,6 +1193,19 @@ export default function App() {
                   
                   {!showScratchView ? (
                     <div className="flex gap-4">
+                      <button 
+                        onClick={() => setExpandedFolders(new Set(Object.keys(groupedDiffs)))}
+                        className="text-[10px] uppercase tracking-widest font-bold border-b border-[#141414]/40 dark:border-zinc-100/40 text-[#141414]/60 dark:text-zinc-100/60 hover:text-[#141414] dark:hover:text-zinc-100 transition-colors"
+                      >
+                        Expand All
+                      </button>
+                      <button 
+                        onClick={() => setExpandedFolders(new Set())}
+                        className="text-[10px] uppercase tracking-widest font-bold border-b border-[#141414]/40 dark:border-zinc-100/40 text-[#141414]/60 dark:text-zinc-100/60 hover:text-[#141414] dark:hover:text-zinc-100 transition-colors"
+                      >
+                        Collapse All
+                      </button>
+                      <div className="w-px h-4 bg-[#141414]/10 dark:bg-white/10 self-center" />
                       <button 
                         onClick={handleSelectAllSync}
                         className="text-[10px] uppercase tracking-widest font-bold border-b border-mint-blue text-mint-blue hover:opacity-80 transition-opacity"
@@ -970,23 +1238,28 @@ export default function App() {
                 </div>
 
                 {showScratchView ? (
-                  <div className="border border-amber-200 bg-amber-50/30">
-                    <div className={`grid ${wrapPaths ? 'grid-cols-[40px_2fr_1fr_1fr]' : 'grid-cols-[40px_1.5fr_1fr_1fr]'} p-4 border-b border-amber-200 bg-amber-100/50`}>
+                  <div className="border border-amber-200 dark:border-amber-900/50 bg-amber-50/30 dark:bg-amber-900/10">
+                    <div className={`grid ${wrapPaths ? 'grid-cols-[40px_2fr_1fr_1fr_80px]' : 'grid-cols-[40px_1.5fr_1fr_1fr_80px]'} p-4 border-b border-amber-200 dark:border-amber-900/50 bg-amber-100/50 dark:bg-amber-900/20`}>
                       <div className="col-header"></div>
                       <div className="col-header">File Name & Path</div>
                       <div className="col-header">Size</div>
                       <div className="col-header">Modified</div>
+                      <div className="col-header">Actions</div>
                     </div>
                     {scratchFiles.length > 0 ? (
                       scratchFiles.map((file, idx) => (
                         <div 
                           key={file.path}
-                          className={`grid ${wrapPaths ? 'grid-cols-[40px_2fr_1fr_1fr]' : 'grid-cols-[40px_1.5fr_1fr_1fr]'} p-4 border-b border-amber-100 last:border-0 transition-colors hover:bg-amber-100/30 group cursor-pointer ${selectedScratchFiles.has(file.path) ? 'bg-amber-100/50 border-l-4 border-amber-500' : ''}`}
+                          className={`grid ${wrapPaths ? 'grid-cols-[40px_2fr_1fr_1fr_80px]' : 'grid-cols-[40px_1.5fr_1fr_1fr_80px]'} p-4 border-b border-amber-100 dark:border-amber-900/20 last:border-0 transition-colors hover:bg-amber-100/30 dark:hover:bg-amber-900/30 group cursor-pointer ${selectedScratchFiles.has(file.path) ? 'bg-amber-100/50 dark:bg-amber-900/40 border-l-4 border-amber-500' : ''}`}
                           onClick={() => {
                             const newSelection = new Set(selectedScratchFiles);
                             if (newSelection.has(file.path)) newSelection.delete(file.path);
                             else newSelection.add(file.path);
                             setSelectedScratchFiles(newSelection);
+                          }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            setContextMenu({ x: e.clientX, y: e.clientY, path: file.path });
                           }}
                         >
                           <div className="flex items-center justify-center">
@@ -1002,6 +1275,29 @@ export default function App() {
                           </div>
                           <div className="flex items-center font-mono text-xs">{formatBytes(file.size)}</div>
                           <div className="flex items-center font-mono text-xs">{new Date(file.lastModified).toLocaleDateString()}</div>
+                          <div className="flex items-center gap-2">
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenFile(file.path);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-amber-600 hover:bg-amber-100 p-1 rounded"
+                              title="Open File"
+                            >
+                              <ExternalLink size={14} />
+                            </button>
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const folderPath = file.path.substring(0, file.path.lastIndexOf(file.path.includes('\\') ? '\\' : '/'));
+                                handleOpenFolder(folderPath);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-amber-600 hover:bg-amber-100 p-1 rounded"
+                              title="Open Folder"
+                            >
+                              <FolderOpen size={14} />
+                            </button>
+                          </div>
                         </div>
                       ))
                     ) : (
@@ -1009,15 +1305,15 @@ export default function App() {
                     )}
                   </div>
                 ) : syncDiffs.length > 0 ? (
-                  <div className="border border-[#141414]">
-                    <div className={`grid ${wrapPaths ? 'grid-cols-[40px_1fr_2fr_1fr_1.5fr]' : 'grid-cols-[40px_1fr_1fr_1fr_1.5fr]'} p-4 border-b border-[#141414] bg-[#141414]/5`}>
+                  <div className="border border-[#141414] dark:border-zinc-800">
+                    <div className={`grid ${wrapPaths ? 'grid-cols-[40px_1fr_2fr_1fr_1.5fr]' : 'grid-cols-[40px_1fr_1fr_1fr_1.5fr]'} p-4 border-b border-[#141414] dark:border-zinc-800 bg-[#141414]/5 dark:bg-white/5`}>
                       <div className="col-header"></div>
                       <div className="col-header">Status</div>
                       <div className="col-header flex items-center gap-2">
                         File Name
                         <button 
                           onClick={() => setWrapPaths(!wrapPaths)}
-                          className={`text-[9px] px-1.5 py-0.5 border border-[#141414] transition-colors ${wrapPaths ? 'bg-[#141414] text-[#E4E3E0]' : 'hover:bg-[#141414]/5'}`}
+                          className={`text-[9px] px-1.5 py-0.5 border border-[#141414] dark:border-zinc-800 transition-colors ${wrapPaths ? 'bg-[#141414] dark:bg-zinc-100 text-[#E4E3E0] dark:text-zinc-950' : 'hover:bg-[#141414]/5 dark:hover:bg-white/5'}`}
                         >
                           {wrapPaths ? 'Compact' : 'Wrap'}
                         </button>
@@ -1026,54 +1322,146 @@ export default function App() {
                       <div className="col-header">Action Staging</div>
                     </div>
 
-                    {syncDiffs.map((diff, index) => (
-                      <div 
-                        key={index}
-                        className={`grid ${wrapPaths ? 'grid-cols-[40px_1fr_2fr_1fr_1.5fr]' : 'grid-cols-[40px_1fr_1fr_1fr_1.5fr]'} p-4 border-b border-[#141414] last:border-0 transition-colors hover:bg-mint-purple/10 group cursor-pointer ${selectedDiffs.has(index) ? 'bg-mint-purple/20 border-l-4 border-mint-purple' : ''}`}
-                        onClick={() => toggleDiffSelection(index)}
-                      >
-                        <div className="flex items-center justify-center">
-                          <div className={`w-4 h-4 border border-current flex items-center justify-center ${selectedDiffs.has(index) ? 'bg-mint-purple border-mint-purple' : ''}`}>
-                            {selectedDiffs.has(index) && <Check size={12} className="text-white" />}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {diff.type === 'missing-in-b' && <span className="text-[10px] px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full font-bold uppercase">New in A</span>}
-                          {diff.type === 'missing-in-a' && <span className="text-[10px] px-2 py-0.5 bg-purple-100 text-purple-800 rounded-full font-bold uppercase">New in B</span>}
-                          {diff.type === 'different-version' && <span className="text-[10px] px-2 py-0.5 bg-amber-100 text-amber-800 rounded-full font-bold uppercase">Modified</span>}
-                        </div>
-                        <div className="flex flex-col overflow-hidden py-1">
-                          <span className="font-medium truncate">{diff.fileA?.name || diff.fileB?.name}</span>
-                          <span className={`text-[10px] opacity-50 font-mono ${wrapPaths ? 'break-all whitespace-normal leading-tight mt-1' : 'truncate'}`}>
-                            {diff.relPath}
-                          </span>
-                        </div>
-                        <div className="flex items-center font-mono text-xs">
-                          {formatBytes(diff.fileA?.size || diff.fileB?.size || 0)}
-                        </div>
-                        <div className="flex items-center gap-4">
-                          <select 
-                            value={syncActions[index] || (diff.type === 'missing-in-b' ? 'Mirror to B' : 'Mirror to A')}
-                            onChange={(e) => {
-                              setSyncActions({ ...syncActions, [index]: e.target.value });
-                            }}
-                            className="bg-transparent border border-current/20 text-[10px] uppercase tracking-widest px-2 py-1 focus:outline-none"
-                            onClick={(e) => e.stopPropagation()}
+                    {Object.entries(groupedDiffs).map(([folder, indices]) => {
+                      const isExpanded = expandedFolders.has(folder);
+                      const allSelected = indices.every(idx => selectedDiffs.has(idx));
+                      const someSelected = !allSelected && indices.some(idx => selectedDiffs.has(idx));
+                      
+                      return (
+                        <div key={folder} className="border-b border-[#141414] dark:border-zinc-800 last:border-0">
+                          {/* Folder Header */}
+                          <div 
+                            className={`flex items-center gap-4 p-3 bg-[#141414]/[0.02] dark:bg-white/[0.02] hover:bg-[#141414]/[0.05] dark:hover:bg-white/[0.05] cursor-pointer transition-colors`}
+                            onClick={() => toggleFolderExpansion(folder)}
                           >
-                            <option className="bg-[#E4E3E0] text-[#141414]">Mirror to B</option>
-                            <option className="bg-[#E4E3E0] text-[#141414]">Mirror to A</option>
-                            <option className="bg-[#E4E3E0] text-[#141414]">Move to Scratch</option>
-                            <option className="bg-[#E4E3E0] text-[#141414]">Ignore</option>
-                          </select>
-                          <div className="text-[10px] opacity-50 font-mono truncate">
-                            From: {diff.fileA ? 'Drive A' : 'Drive B'}
+                            <div 
+                              className="flex items-center justify-center w-6 h-6 hover:bg-[#141414]/10 dark:hover:bg-white/10 rounded transition-colors"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleFolderExpansion(folder);
+                              }}
+                            >
+                              {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                            </div>
+                            
+                            <div 
+                              className="flex items-center justify-center"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleFolderSelection(indices);
+                              }}
+                            >
+                              <div className={`w-4 h-4 border border-current flex items-center justify-center ${allSelected ? 'bg-mint-purple border-mint-purple' : someSelected ? 'bg-mint-purple/40 border-mint-purple' : ''}`}>
+                                {allSelected && <Check size={12} className="text-white" />}
+                                {someSelected && <div className="w-2 h-0.5 bg-white" />}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                              <FolderOpen size={16} className="text-mint-blue shrink-0" />
+                              <span className="font-serif italic font-bold text-sm truncate">{folder}</span>
+                              <span className="text-[10px] opacity-40 font-mono">({indices.length} files)</span>
+                            </div>
                           </div>
+
+                          {/* Folder Contents */}
+                          <AnimatePresence>
+                            {isExpanded && (
+                              <motion.div
+                                initial={{ height: 0, opacity: 0 }}
+                                animate={{ height: 'auto', opacity: 1 }}
+                                exit={{ height: 0, opacity: 0 }}
+                                className="overflow-hidden bg-white dark:bg-zinc-900"
+                              >
+                                {indices.map((index) => {
+                                  const diff = syncDiffs[index];
+                                  return (
+                                    <div 
+                                      key={index}
+                                      className={`grid ${wrapPaths ? 'grid-cols-[40px_1fr_2fr_1fr_1.5fr]' : 'grid-cols-[40px_1fr_1fr_1fr_1.5fr]'} p-4 border-t border-[#141414]/10 dark:border-zinc-800 transition-colors hover:bg-mint-purple/10 group cursor-pointer ${selectedDiffs.has(index) ? 'bg-mint-purple/20 border-l-4 border-mint-purple' : ''}`}
+                                      onClick={() => toggleDiffSelection(index)}
+                                      onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        const path = diff.fileA?.path || diff.fileB?.path;
+                                        if (path) setContextMenu({ x: e.clientX, y: e.clientY, path });
+                                      }}
+                                    >
+                                      <div className="flex items-center justify-center">
+                                        <div className={`w-4 h-4 border border-current flex items-center justify-center ${selectedDiffs.has(index) ? 'bg-mint-purple border-mint-purple' : ''}`}>
+                                          {selectedDiffs.has(index) && <Check size={12} className="text-white" />}
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        {diff.type === 'missing-in-b' && <span className="text-[10px] px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded-full font-bold uppercase">New for B</span>}
+                                        {diff.type === 'missing-in-a' && <span className="text-[10px] px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded-full font-bold uppercase">New for A</span>}
+                                        {diff.type === 'different-version' && <span className="text-[10px] px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 rounded-full font-bold uppercase">Modified</span>}
+                                      </div>
+                                      <div className="flex flex-col overflow-hidden py-1">
+                                        <div className="flex items-center gap-2">
+                                          <span className="font-medium truncate">{diff.fileA?.name || diff.fileB?.name}</span>
+                                          <button 
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              const path = diff.fileA?.path || diff.fileB?.path;
+                                              if (path) handleOpenFile(path);
+                                            }}
+                                            className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-mint-blue p-1 rounded"
+                                            title="Open File"
+                                          >
+                                            <ExternalLink size={12} />
+                                          </button>
+                                          <button 
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              const path = diff.fileA?.path || diff.fileB?.path;
+                                              if (path) {
+                                                const folderPath = path.substring(0, path.lastIndexOf(path.includes('\\') ? '\\' : '/'));
+                                                handleOpenFolder(folderPath);
+                                              }
+                                            }}
+                                            className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-mint-blue p-1 rounded"
+                                            title="Open Folder"
+                                          >
+                                            <FolderOpen size={12} />
+                                          </button>
+                                        </div>
+                                        <span className={`text-[10px] opacity-50 font-mono ${wrapPaths ? 'break-all whitespace-normal leading-tight mt-1' : 'truncate'}`}>
+                                          {diff.relPath}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center font-mono text-xs">
+                                        {formatBytes(diff.fileA?.size || diff.fileB?.size || 0)}
+                                      </div>
+                                      <div className="flex items-center gap-4">
+                                        <select 
+                                          value={syncActions[index] || (diff.type === 'missing-in-b' ? 'Mirror to B' : 'Mirror to A')}
+                                          onChange={(e) => {
+                                            setSyncActions({ ...syncActions, [index]: e.target.value });
+                                          }}
+                                          className="bg-transparent border border-current/20 text-[10px] uppercase tracking-widest px-2 py-1 focus:outline-none"
+                                          onClick={(e) => e.stopPropagation()}
+                                        >
+                                          <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Mirror to B</option>
+                                          <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Mirror to A</option>
+                                          <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Move to Scratch</option>
+                                          <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Ignore</option>
+                                        </select>
+                                        <div className="text-[10px] opacity-50 font-mono truncate">
+                                          From: {diff.fileA ? 'Drive A' : 'Drive B'}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : !isScanning && (
-                  <div className="h-64 border border-dashed border-[#141414]/30 flex flex-col items-center justify-center opacity-40">
+                  <div className="h-64 border border-dashed border-[#141414]/30 dark:border-zinc-100/20 flex flex-col items-center justify-center opacity-40">
                     <FolderSync size={48} strokeWidth={1} className="mb-4" />
                     <p className="text-sm font-serif italic">Scan drives to compare file structures.</p>
                   </div>
@@ -1168,16 +1556,16 @@ export default function App() {
       {/* Session Modal */}
       <AnimatePresence>
         {showSessionModal && (
-          <div className="fixed inset-0 bg-[#141414]/90 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-[#141414]/90 dark:bg-black/95 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <motion.div 
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-[#E4E3E0] w-full max-w-2xl border border-[#141414] shadow-2xl overflow-hidden"
+              className="bg-[#E4E3E0] dark:bg-zinc-900 w-full max-w-2xl border border-[#141414] dark:border-zinc-800 shadow-2xl overflow-hidden"
             >
-              <div className="p-8 border-b border-[#141414] flex justify-between items-center">
-                <h2 className="text-2xl font-serif italic">Session Management</h2>
-                <button onClick={() => setShowSessionModal(false)} className="opacity-50 hover:opacity-100">
+              <div className="p-8 border-b border-[#141414] dark:border-zinc-800 flex justify-between items-center">
+                <h2 className="text-2xl font-serif italic text-[#141414] dark:text-zinc-100">Session Management</h2>
+                <button onClick={() => setShowSessionModal(false)} className="opacity-50 hover:opacity-100 text-[#141414] dark:text-zinc-100">
                   <X size={24} />
                 </button>
               </div>
@@ -1192,14 +1580,14 @@ export default function App() {
                 )}
 
                 <div className="space-y-4">
-                  <h3 className="text-[10px] uppercase tracking-widest font-bold opacity-50">Save Current State</h3>
+                  <h3 className="text-[10px] uppercase tracking-widest font-bold opacity-50 text-[#141414] dark:text-zinc-100">Save Current State</h3>
                   <div className="flex gap-2">
                     <input 
                       type="text" 
                       value={sessionName}
                       onChange={(e) => setSessionName(e.target.value)}
                       placeholder="Enter session name (e.g., 'Drive A Cleanup')"
-                      className="flex-1 bg-transparent border border-[#141414] px-4 py-2 font-serif italic focus:outline-none"
+                      className="flex-1 bg-transparent border border-[#141414] dark:border-zinc-800 px-4 py-2 font-serif italic focus:outline-none text-[#141414] dark:text-zinc-100"
                     />
                     <button 
                       onClick={saveSession}
@@ -1211,17 +1599,17 @@ export default function App() {
                 </div>
 
                 <div className="space-y-4">
-                  <h3 className="text-[10px] uppercase tracking-widest font-bold opacity-50">Load Previous Session</h3>
-                  <div className="max-h-64 overflow-y-auto border border-[#141414]">
+                  <h3 className="text-[10px] uppercase tracking-widest font-bold opacity-50 text-[#141414] dark:text-zinc-100">Load Previous Session</h3>
+                  <div className="max-h-64 overflow-y-auto border border-[#141414] dark:border-zinc-800">
                     {sessions.length > 0 ? (
                       sessions.map((session) => (
                         <div 
                           key={session.id} 
-                          className="p-4 border-b border-[#141414] last:border-0 flex justify-between items-center hover:bg-[#141414]/5 transition-colors group"
+                          className="p-4 border-b border-[#141414] dark:border-zinc-800 last:border-0 flex justify-between items-center hover:bg-[#141414]/5 dark:hover:bg-white/5 transition-colors group"
                         >
                           <div>
-                            <p className="font-serif italic text-lg">{session.name}</p>
-                            <p className="text-[10px] opacity-50 uppercase tracking-widest">
+                            <p className="font-serif italic text-lg text-[#141414] dark:text-zinc-100">{session.name}</p>
+                            <p className="text-[10px] opacity-50 uppercase tracking-widest text-[#141414] dark:text-zinc-100">
                               {new Date(session.timestamp).toLocaleString()}
                             </p>
                           </div>
@@ -1244,7 +1632,7 @@ export default function App() {
                         </div>
                       ))
                     ) : (
-                      <div className="p-8 text-center opacity-40 italic">No saved sessions found.</div>
+                      <div className="p-8 text-center opacity-40 italic text-[#141414] dark:text-zinc-100">No saved sessions found.</div>
                     )}
                   </div>
                 </div>
@@ -1255,6 +1643,47 @@ export default function App() {
       </AnimatePresence>
 
       <TransferProgress {...progress} />
+      {/* Context Menu */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg shadow-xl py-1 min-w-[160px]"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              handleOpenFile(contextMenu.path);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-zinc-700 flex items-center gap-2"
+          >
+            <ExternalLink size={14} />
+            Open File
+          </button>
+          <button
+            onClick={() => {
+              const folderPath = contextMenu.path.split(/[/\\]/).slice(0, -1).join('/');
+              handleOpenFolder(folderPath);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-zinc-700 flex items-center gap-2"
+          >
+            <FolderOpen size={14} />
+            Open Folder
+          </button>
+          <div className="h-px bg-slate-100 dark:bg-zinc-700 my-1" />
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(contextMenu.path);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-zinc-700 flex items-center gap-2"
+          >
+            <Copy size={14} />
+            Copy Path
+          </button>
+        </div>
+      )}
     </div>
   );
 }

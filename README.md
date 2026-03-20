@@ -67,9 +67,13 @@ Windows users can run the app via PowerShell or Command Prompt.
 ## 🛠️ Key Features
 
 -   **Duplicate Finder**: Scans directories for identical files using SHA-256 content hashing.
--   **Drive Sync**: Compare two drives (A and B) and synchronize missing files in either direction.
+-   **Drive Sync**: Compare two drives (A and B) and synchronize missing files in either direction with "New for A" and "New for B" perspective-based labeling.
+-   **Size Needed Calculation**: Automatically calculates the disk space required for each drive during synchronization, allowing for easy comparison with available free space.
+-   **Dark Mode**: A modern, eye-friendly dark interface that respects your system settings or can be toggled manually.
 -   **Scratch Disk Management**: Stage files in a temporary "scratch" location before final synchronization—perfect for organizing large media collections.
--   **Session Management**: Save your scan results and sync queues to continue your work later.
+-   **Open in OS**: Directly open files and folders in your operating system's default programs (File Explorer, Finder, etc.) with a single click or right-click.
+-   **Stop Scan**: Interrupt ongoing duplicate or sync scans at any time to save time on large directories.
+-   **Save & Load Session**: Save and load your scan results and sync queues to continue your work later.
 -   **Cross-Platform Picker**: A built-in folder picker that understands Windows drive letters (`C:\`, `D:\`) and Linux mount points (`/media`, `/mnt`).
 
 ---
