@@ -292,8 +292,8 @@ async function startServer() {
   // API: Scan for duplicates
   app.post("/api/scan-duplicates", async (req, res) => {
     isScanningStopped = false;
+    const { directory } = req.body;
     try {
-      const { directory } = req.body;
       if (!fs.existsSync(directory)) {
         return res.status(400).json({ error: "Directory does not exist" });
       }
@@ -339,10 +339,12 @@ async function startServer() {
       }
 
       reportProgress(totalFilesToHash, totalFilesToHash, "Scan complete");
-      res.json({ duplicateGroups });
+      const freeSpace = await getFreeSpace(directory);
+      res.json({ duplicateGroups, freeSpace });
     } catch (error: any) {
       if (error.message === "Scan stopped by user") {
-        return res.json({ duplicateGroups: [], stopped: true });
+        const freeSpace = await getFreeSpace(directory);
+        return res.json({ duplicateGroups: [], freeSpace, stopped: true });
       }
       res.status(500).json({ error: error.message });
     }

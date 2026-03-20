@@ -86,6 +86,7 @@ export default function App() {
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [scanDir, setScanDir] = useState('');
+  const [scannedDriveFreeSpace, setScannedDriveFreeSpace] = useState<number | null>(null);
 
   // Sync Tool State
   const [syncDiffs, setSyncDiffs] = useState<SyncDiff[]>([]);
@@ -95,6 +96,26 @@ export default function App() {
   const [sourceDir, setSourceDir] = useState('');
   const [targetDir, setTargetDir] = useState('');
   const [scratchDiskPath, setScratchDiskPath] = useState('');
+
+  const duplicateStats = useMemo(() => {
+    let totalFiles = 0;
+    let totalRedundantSize = 0;
+    
+    duplicateGroups.forEach(group => {
+      // In each group, the first file is considered the "original", 
+      // and the rest are duplicates.
+      if (group.files.length > 1) {
+        const duplicateCount = group.files.length - 1;
+        totalFiles += duplicateCount;
+        totalRedundantSize += group.files[0].size * duplicateCount;
+      }
+    });
+    
+    return {
+      totalFiles,
+      totalRedundantSize
+    };
+  }, [duplicateGroups]);
 
   useEffect(() => {
     // Fetch test paths from server
@@ -378,9 +399,11 @@ export default function App() {
         alert(data.error);
       } else if (data.stopped) {
         console.log("Scan stopped by user");
+        setScannedDriveFreeSpace(data.freeSpace || null);
         setProgress(prev => ({ ...prev, isVisible: false }));
       } else {
         setDuplicateGroups(data.duplicateGroups);
+        setScannedDriveFreeSpace(data.freeSpace || null);
         setProgress(prev => ({ ...prev, isVisible: false }));
       }
     } catch (error) {
@@ -887,6 +910,51 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
+              {duplicateGroups.length > 0 && (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="grid grid-cols-1 md:grid-cols-3 gap-6"
+                >
+                  <div className="p-6 border border-mint-purple/20 bg-mint-purple/[0.03] dark:bg-mint-purple/[0.05] rounded-xl flex flex-col gap-2">
+                    <div className="flex items-center gap-2 text-mint-purple">
+                      <Copy size={16} />
+                      <span className="text-[10px] uppercase tracking-widest font-bold">Duplicates Found</span>
+                    </div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-3xl font-serif italic font-bold">{duplicateStats.totalFiles}</span>
+                      <span className="text-xs opacity-50">Redundant Files</span>
+                    </div>
+                  </div>
+
+                  <div className="p-6 border border-emerald-500/20 bg-emerald-500/[0.03] dark:bg-emerald-500/[0.05] rounded-xl flex flex-col gap-2">
+                    <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
+                      <Trash2 size={16} />
+                      <span className="text-[10px] uppercase tracking-widest font-bold">Potential Savings</span>
+                    </div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-3xl font-serif italic font-bold text-emerald-600 dark:text-emerald-400">
+                        {formatBytes(duplicateStats.totalRedundantSize)}
+                      </span>
+                      <span className="text-xs opacity-50">Disk Space</span>
+                    </div>
+                  </div>
+
+                  <div className="p-6 border border-mint-blue/20 bg-mint-blue/[0.03] dark:bg-mint-blue/[0.05] rounded-xl flex flex-col gap-2">
+                    <div className="flex items-center gap-2 text-mint-blue">
+                      <HardDrive size={16} />
+                      <span className="text-[10px] uppercase tracking-widest font-bold">Drive Free Space</span>
+                    </div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-3xl font-serif italic font-bold text-mint-blue">
+                        {scannedDriveFreeSpace !== null ? formatBytes(scannedDriveFreeSpace) : '---'}
+                      </span>
+                      <span className="text-xs opacity-50">Available</span>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
 
               {duplicateGroups.length > 0 ? (
                 <div className="space-y-4">
