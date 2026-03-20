@@ -758,9 +758,36 @@ export default function App() {
     <div className={`min-h-screen bg-[#E4E3E0] dark:bg-zinc-950 text-[#141414] dark:text-zinc-100 font-sans selection:bg-[#141414] dark:selection:bg-zinc-100 selection:text-[#E4E3E0] dark:selection:text-zinc-950 transition-colors duration-300 ${isDarkMode ? 'dark' : ''}`}>
       {/* Sidebar / Navigation */}
       <div className="fixed left-0 top-0 h-full w-64 border-r border-[#141414] dark:border-zinc-800 bg-[#E4E3E0] dark:bg-zinc-900 z-10 hidden md:flex flex-col">
-        <div className="p-8 border-bottom border-[#141414]">
-          <h1 className="text-2xl font-serif italic tracking-tight">MintSync</h1>
-          <p className="text-[10px] uppercase tracking-widest opacity-50 mt-1">Local File Utility</p>
+        <div className="p-8 border-bottom border-[#141414] flex items-center gap-4">
+          <div className="w-12 h-12 flex-shrink-0">
+            {/* Recreated User Logo as SVG */}
+            <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-lg">
+              <circle cx="50" cy="50" r="48" fill="#141414" />
+              {/* Gear */}
+              <path 
+                d="M50 30c-11 0-20 9-20 20s9 20 20 20 20-9 20-20-9-20-20-20zm0 34c-7.7 0-14-6.3-14-14s6.3-14 14-14 14 6.3 14 14-6.3 14-14 14z" 
+                fill="#A7F3D0" 
+                opacity="0.8"
+              />
+              <path 
+                d="M50 15l3 7h-6l3-7zM50 85l3-7h-6l3 7zM15 50l7-3v6l-7-3zM85 50l-7-3v6l7-3zM25 25l5 5-4 4-5-5 4-4zM75 75l-5-5 4-4 5 5-4 4zM25 75l5-5 4 4-5 5-4-4zM75 25l-5 5-4-4 5-5 4 4z" 
+                fill="#A7F3D0"
+              />
+              {/* Arrows */}
+              <path d="M35 65L65 35M65 35H55M65 35V45" stroke="#A7F3D0" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M65 35L35 65M35 65H45M35 65V55" stroke="#A7F3D0" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+              {/* Magnifying Glass */}
+              <circle cx="50" cy="50" r="12" fill="#141414" stroke="#A7F3D0" strokeWidth="3" />
+              <path d="M58 58l8 8" stroke="#A7F3D0" strokeWidth="4" strokeLinecap="round" />
+            </svg>
+          </div>
+          <div>
+            <h1 className="text-2xl font-serif italic tracking-tight leading-none">
+              <span className="text-mint-purple">Mint</span>
+              <span className="text-mint-blue">Sync</span>
+            </h1>
+            <p className="text-[10px] uppercase tracking-widest opacity-50 mt-1">Local File Utility</p>
+          </div>
         </div>
         
         <nav className="flex-1 px-4 py-8 space-y-2">
