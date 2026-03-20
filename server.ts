@@ -367,8 +367,31 @@ async function startServer() {
       const sourceMap = new Map(sourceFiles.map(f => [path.relative(sourceDir, f.path), f]));
       const targetMap = new Map(targetFiles.map(f => [path.relative(targetDir, f.path), f]));
 
+      // Create a map of target files by size for content-based matching
+      const targetBySize = new Map<number, any[]>();
+      for (const f of targetFiles) {
+        if (!targetBySize.has(f.size)) targetBySize.set(f.size, []);
+        targetBySize.get(f.size)!.push(f);
+      }
+
+      // Create a map of source files by size for content-based matching
+      const sourceBySize = new Map<number, any[]>();
+      for (const f of sourceFiles) {
+        if (!sourceBySize.has(f.size)) sourceBySize.set(f.size, []);
+        sourceBySize.get(f.size)!.push(f);
+      }
+
       const totalToCompare = sourceMap.size;
       let comparedCount = 0;
+
+      // Cache for hashes to avoid re-hashing
+      const hashCache = new Map<string, string>();
+      const getCachedHash = async (filePath: string) => {
+        if (hashCache.has(filePath)) return hashCache.get(filePath)!;
+        const hash = await getFileHash(filePath);
+        hashCache.set(filePath, hash);
+        return hash;
+      };
 
       // Check source against target
       for (const [relPath, sFile] of sourceMap.entries()) {
@@ -378,18 +401,33 @@ async function startServer() {
         
         const tFile = targetMap.get(relPath);
         if (!tFile) {
-          diffs.push({ type: 'missing-in-b', fileA: sFile, relPath });
-          totalSizeToSync += sFile.size;
+          // Check if content exists anywhere on target
+          let foundDuplicate = false;
+          const candidates = targetBySize.get(sFile.size) || [];
+          if (candidates.length > 0) {
+            const sHash = await getCachedHash(sFile.path);
+            for (const candidate of candidates) {
+              const cHash = await getCachedHash(candidate.path);
+              if (sHash === cHash) {
+                diffs.push({ type: 'duplicate-content', fileA: sFile, fileB: candidate, relPath });
+                foundDuplicate = true;
+                break;
+              }
+            }
+          }
+          
+          if (!foundDuplicate) {
+            diffs.push({ type: 'missing-in-b', fileA: sFile, relPath });
+            totalSizeToSync += sFile.size;
+          }
         } else {
           // Optimization: Check size and mtime first
           const sMtime = new Date(sFile.lastModified).getTime();
           const tMtime = new Date(tFile.lastModified).getTime();
           
           if (sFile.size !== tFile.size || Math.abs(sMtime - tMtime) > 1000) {
-            // Only hash if metadata differs or if we want to be 100% sure
-            // For now, let's still hash but the user will see progress
-            const sHash = await getFileHash(sFile.path);
-            const tHash = await getFileHash(tFile.path);
+            const sHash = await getCachedHash(sFile.path);
+            const tHash = await getCachedHash(tFile.path);
             if (sHash !== tHash) {
               diffs.push({ type: 'different-version', fileA: sFile, fileB: tFile, relPath });
               totalSizeToSync += sFile.size;
@@ -402,8 +440,26 @@ async function startServer() {
       for (const [relPath, tFile] of targetMap.entries()) {
         if (isScanningStopped) throw new Error("Scan stopped by user");
         if (!sourceMap.has(relPath)) {
-          diffs.push({ type: 'missing-in-a', fileB: tFile, relPath });
-          totalSizeToSync += tFile.size;
+          // Check if content exists anywhere on source
+          let foundDuplicate = false;
+          const candidates = sourceBySize.get(tFile.size) || [];
+          if (candidates.length > 0) {
+            const tHash = await getCachedHash(tFile.path);
+            for (const candidate of candidates) {
+              const cHash = await getCachedHash(candidate.path);
+              if (tHash === cHash) {
+                // We already found this duplicate in the source-to-target pass if it exists in both
+                // But we need to make sure we don't mark it as "missing-in-a"
+                foundDuplicate = true;
+                break;
+              }
+            }
+          }
+
+          if (!foundDuplicate) {
+            diffs.push({ type: 'missing-in-a', fileB: tFile, relPath });
+            totalSizeToSync += tFile.size;
+          }
         }
       }
 

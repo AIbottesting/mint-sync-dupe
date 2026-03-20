@@ -67,6 +67,7 @@ Windows users can run the app via PowerShell or Command Prompt.
 ## 🛠️ Key Features
 
 -   **Duplicate Finder**: Scans directories for identical files using SHA-256 content hashing.
+-   **Smart Content-Based Sync**: Detects identical files across drives using SHA-256 hashing, even if they have different names or paths. Prevents redundant transfers and avoids duplication.
 -   **Drive Sync**: Compare two drives (A and B) and synchronize missing files in either direction with "New for A" and "New for B" perspective-based labeling.
 -   **Size Needed Calculation**: Automatically calculates the disk space required for each drive during synchronization, allowing for easy comparison with available free space.
 -   **Dark Mode**: A modern, eye-friendly dark interface that respects your system settings or can be toggled manually.

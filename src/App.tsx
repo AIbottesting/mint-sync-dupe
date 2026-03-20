@@ -148,12 +148,14 @@ export default function App() {
   }, [syncDiffs]);
 
   const toggleFolderSelection = (indices: number[]) => {
-    const allSelected = indices.every(idx => selectedDiffs.has(idx));
+    const selectableIndices = indices.filter(idx => syncDiffs[idx].type !== 'duplicate-content');
+    const allSelected = selectableIndices.length > 0 && selectableIndices.every(idx => selectedDiffs.has(idx));
     const newSelection = new Set(selectedDiffs);
+    
     if (allSelected) {
-      indices.forEach(idx => newSelection.delete(idx));
+      selectableIndices.forEach(idx => newSelection.delete(idx));
     } else {
-      indices.forEach(idx => newSelection.add(idx));
+      selectableIndices.forEach(idx => newSelection.add(idx));
     }
     setSelectedDiffs(newSelection);
   };
@@ -714,7 +716,9 @@ export default function App() {
   };
 
   const handleSelectAllSync = () => {
-    const allIndices = syncDiffs.map((_, index) => index);
+    const allIndices = syncDiffs
+      .map((diff, index) => diff.type !== 'duplicate-content' ? index : -1)
+      .filter(idx => idx !== -1);
     setSelectedDiffs(new Set(allIndices));
   };
 
@@ -1422,10 +1426,14 @@ export default function App() {
                                         {diff.type === 'missing-in-b' && <span className="text-[10px] px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded-full font-bold uppercase">New for B</span>}
                                         {diff.type === 'missing-in-a' && <span className="text-[10px] px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded-full font-bold uppercase">New for A</span>}
                                         {diff.type === 'different-version' && <span className="text-[10px] px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 rounded-full font-bold uppercase">Modified</span>}
+                                        {diff.type === 'duplicate-content' && <span className="text-[10px] px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300 rounded-full font-bold uppercase">Already Present</span>}
                                       </div>
                                       <div className="flex flex-col overflow-hidden py-1">
                                         <div className="flex items-center gap-2">
                                           <span className="font-medium truncate">{diff.fileA?.name || diff.fileB?.name}</span>
+                                          {diff.type === 'duplicate-content' && (
+                                            <span className="text-[9px] text-emerald-600 dark:text-emerald-400 font-bold italic">(Content matches {diff.fileB?.name || diff.fileA?.name})</span>
+                                          )}
                                           <button 
                                             onClick={(e) => {
                                               e.stopPropagation();
