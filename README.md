@@ -67,8 +67,12 @@ Windows users can run the app via PowerShell or Command Prompt.
 ## 🛠️ Key Features
 
 -   **Duplicate Finder**: Scans directories for identical files using SHA-256 content hashing. Now includes a summary dashboard showing total redundant files, potential disk space savings, and current drive free space.
--   **Smart Content-Based Sync**: Detects identical files across drives using SHA-256 hashing, even if they have different names or paths. Prevents redundant transfers and avoids duplication.
+-   **Smart Content-Based Sync**: Detects identical files across drives using SHA-256 hashing, even if they have different names or paths.
+    -   **Instant Sync Buttons**: Includes "Sync A to B" and "Sync B to A" buttons to instantly rename or move files on one drive to match their counterparts on the other drive. This saves time and bandwidth by avoiding redundant transfers of large files.
+    -   **Cross-Device Robustness**: Handles moves across different partitions or physical drives automatically using a copy-and-delete fallback with integrity verification.
+-   **High-Performance Hashing**: Uses a two-pass "Quick Hash" strategy (1MB check + full check) and optimized 1MB read buffers to maximize scan speed while minimizing disk I/O.
 -   **Drive Sync**: Compare two drives (A and B) and synchronize missing files in either direction with "New for A" and "New for B" perspective-based labeling.
+    -   **Individual & Bulk Delete**: Now includes options to permanently delete individual files or bulk delete selected files directly from the sync results, helping you clean up redundant data instantly.
 -   **Size Needed Calculation**: Automatically calculates the disk space required for each drive during synchronization, allowing for easy comparison with available free space.
 -   **Dark Mode**: A modern, eye-friendly dark interface that respects your system settings or can be toggled manually.
 -   **Scratch Disk Management**: Stage files in a temporary "scratch" location before final synchronization—perfect for organizing large media collections.
@@ -76,6 +80,7 @@ Windows users can run the app via PowerShell or Command Prompt.
 -   **Stop Scan**: Interrupt ongoing duplicate or sync scans at any time to save time on large directories.
 -   **Save & Load Session**: Save and load your scan results and sync queues to continue your work later.
 -   **Cross-Platform Picker**: A built-in folder picker that understands Windows drive letters (`C:\`, `D:\`) and Linux mount points (`/media`, `/mnt`).
+-   **Linux Mint Support**: Fully tested on Linux Mint 22.3 with native desktop integration and robust file handling for external drives.
 
 ---
 

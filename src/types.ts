@@ -19,6 +19,7 @@ export interface SyncDiff {
   fileA?: FileItem;
   fileB?: FileItem;
   relPath: string;
+  presentOn?: 'A' | 'B';
 }
 
 export interface SyncStats {

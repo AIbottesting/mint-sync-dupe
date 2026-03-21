@@ -452,6 +452,136 @@ export default function App() {
     }
   };
 
+  const handleSyncRenameMove = async (index: number, direction: 'AtoB' | 'BtoA') => {
+    const diff = syncDiffs[index];
+    if (!diff || diff.type !== 'duplicate-content') return;
+
+    const targetFile = direction === 'AtoB' ? diff.fileB : diff.fileA;
+    const targetBaseDir = direction === 'AtoB' ? targetDir : sourceDir;
+    
+    // The desired relative path is the one from the "source" of the sync
+    const desiredRelPath = diff.relPath;
+    const separator = targetBaseDir.includes('\\') ? '\\' : '/';
+    const finalTargetPath = `${targetBaseDir}${targetBaseDir.endsWith('/') || targetBaseDir.endsWith('\\') ? '' : separator}${desiredRelPath}`;
+
+    if (!targetFile) return;
+
+    try {
+      const response = await fetch('/api/sync-rename-move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          sourcePath: targetFile.path, 
+          targetPath: finalTargetPath 
+        })
+      });
+
+      const data = await response.json();
+      if (data.error) {
+        alert(data.error);
+      } else {
+        const newDiffs = [...syncDiffs];
+        newDiffs.splice(index, 1);
+        setSyncDiffs(newDiffs);
+        
+        const newActions = { ...syncActions };
+        delete newActions[index];
+        const shiftedActions: Record<number, string> = {};
+        Object.entries(newActions).forEach(([key, val]) => {
+          const k = parseInt(key);
+          const action = val as string;
+          if (k > index) {
+            shiftedActions[k - 1] = action;
+          } else {
+            shiftedActions[k] = action;
+          }
+        });
+        setSyncActions(shiftedActions);
+      }
+    } catch (error) {
+      console.error("Rename/Move failed:", error);
+      alert("Failed to rename/move file.");
+    }
+  };
+
+  const handleDeleteSyncFile = async (filePath: string, index: number) => {
+    if (!confirm(`Are you sure you want to permanently delete this file?\n\n${filePath}`)) return;
+    
+    try {
+      const response = await fetch('/api/delete-files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePaths: [filePath] })
+      });
+      
+      const data = await response.json();
+      if (data.error) {
+        alert(data.error);
+      } else {
+        // Remove from syncDiffs
+        const newDiffs = [...syncDiffs];
+        newDiffs.splice(index, 1);
+        setSyncDiffs(newDiffs);
+        
+        // Adjust syncActions
+        const newActions = { ...syncActions };
+        delete newActions[index];
+        const shiftedActions: Record<number, string> = {};
+        Object.entries(newActions).forEach(([key, val]) => {
+          const k = parseInt(key);
+          const action = val as string;
+          if (k > index) {
+            shiftedActions[k - 1] = action;
+          } else {
+            shiftedActions[k] = action;
+          }
+        });
+        setSyncActions(shiftedActions);
+      }
+    } catch (error) {
+      console.error("Delete failed:", error);
+      alert("Failed to delete file.");
+    }
+  };
+
+  const handleDeleteSelectedSync = async () => {
+    if (selectedDiffs.size === 0) return;
+    if (!confirm(`Are you sure you want to permanently delete ${selectedDiffs.size} selected files?`)) return;
+    
+    const indices = (Array.from(selectedDiffs) as number[]).sort((a, b) => b - a);
+    const filePaths = indices.map(idx => syncDiffs[idx].fileA?.path || syncDiffs[idx].fileB?.path).filter(Boolean) as string[];
+    
+    setProgress({ total: filePaths.length, current: 0, message: 'Deleting files...', isVisible: true });
+    
+    try {
+      for (let i = 0; i < filePaths.length; i++) {
+        const filePath = filePaths[i];
+        const fileName = filePath.split('/').pop() || '';
+        setProgress(prev => ({ ...prev, current: i, message: `Deleting ${fileName}` }));
+        
+        await fetch('/api/delete-files', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filePaths: [filePath] })
+        });
+      }
+      
+      const newDiffs = [...syncDiffs];
+      indices.forEach(idx => newDiffs.splice(idx, 1));
+      setSyncDiffs(newDiffs);
+      setSelectedDiffs(new Set());
+      setSyncActions({});
+      
+      setProgress(prev => ({ ...prev, current: filePaths.length, message: 'Deletion complete' }));
+      setTimeout(() => setProgress(prev => ({ ...prev, isVisible: false })), 2000);
+      alert("Selected files deleted successfully.");
+    } catch (error) {
+      console.error("Bulk delete failed:", error);
+      alert("Failed to delete some files.");
+      setProgress(prev => ({ ...prev, isVisible: false }));
+    }
+  };
+
   const handleDeletePermanently = async () => {
     if (!confirm(`Are you sure you want to permanently delete ${selectedFiles.size} files?`)) return;
     const files = Array.from(selectedFiles) as string[];
@@ -1317,6 +1447,14 @@ export default function App() {
                       >
                         Clear Selection
                       </button>
+                      {selectedDiffs.size > 0 && (
+                        <button 
+                          onClick={handleDeleteSelectedSync}
+                          className="text-[10px] uppercase tracking-widest font-bold border-b border-red-500 text-red-500 hover:opacity-80 transition-opacity"
+                        >
+                          Delete Selected
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <div className="flex gap-4">
@@ -1494,7 +1632,11 @@ export default function App() {
                                         {diff.type === 'missing-in-b' && <span className="text-[10px] px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded-full font-bold uppercase">New for B</span>}
                                         {diff.type === 'missing-in-a' && <span className="text-[10px] px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded-full font-bold uppercase">New for A</span>}
                                         {diff.type === 'different-version' && <span className="text-[10px] px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 rounded-full font-bold uppercase">Modified</span>}
-                                        {diff.type === 'duplicate-content' && <span className="text-[10px] px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300 rounded-full font-bold uppercase">Already Present</span>}
+                                        {diff.type === 'duplicate-content' && (
+                                          <span className="text-[10px] px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300 rounded-full font-bold uppercase">
+                                            Already Present on {diff.presentOn || 'Other Drive'}
+                                          </span>
+                                        )}
                                       </div>
                                       <div className="flex flex-col overflow-hidden py-1">
                                         <div className="flex items-center gap-2">
@@ -1527,6 +1669,17 @@ export default function App() {
                                           >
                                             <FolderOpen size={12} />
                                           </button>
+                                          <button 
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              const path = diff.fileA?.path || diff.fileB?.path;
+                                              if (path) handleDeleteSyncFile(path, index);
+                                            }}
+                                            className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-red-500 p-1 rounded"
+                                            title="Delete File Permanently"
+                                          >
+                                            <Trash2 size={12} />
+                                          </button>
                                         </div>
                                         <span className={`text-[10px] opacity-50 font-mono ${wrapPaths ? 'break-all whitespace-normal leading-tight mt-1' : 'truncate'}`}>
                                           {diff.relPath}
@@ -1536,19 +1689,44 @@ export default function App() {
                                         {formatBytes(diff.fileA?.size || diff.fileB?.size || 0)}
                                       </div>
                                       <div className="flex items-center gap-4">
-                                        <select 
-                                          value={syncActions[index] || (diff.type === 'missing-in-b' ? 'Mirror to B' : 'Mirror to A')}
-                                          onChange={(e) => {
-                                            setSyncActions({ ...syncActions, [index]: e.target.value });
-                                          }}
-                                          className="bg-transparent border border-current/20 text-[10px] uppercase tracking-widest px-2 py-1 focus:outline-none"
-                                          onClick={(e) => e.stopPropagation()}
-                                        >
-                                          <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Mirror to B</option>
-                                          <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Mirror to A</option>
-                                          <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Move to Scratch</option>
-                                          <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Ignore</option>
-                                        </select>
+                                        {diff.type === 'duplicate-content' ? (
+                                          <div className="flex gap-2">
+                                            <button 
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleSyncRenameMove(index, 'AtoB');
+                                              }}
+                                              className="text-[9px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-purple text-white hover:bg-mint-purple/80 transition-colors rounded"
+                                              title="Rename/Move on B to match A"
+                                            >
+                                              Sync B to A
+                                            </button>
+                                            <button 
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleSyncRenameMove(index, 'BtoA');
+                                              }}
+                                              className="text-[9px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-blue text-white hover:bg-mint-blue/80 transition-colors rounded"
+                                              title="Rename/Move on A to match B"
+                                            >
+                                              Sync A to B
+                                            </button>
+                                          </div>
+                                        ) : (
+                                          <select 
+                                            value={syncActions[index] || (diff.type === 'missing-in-b' ? 'Mirror to B' : 'Mirror to A')}
+                                            onChange={(e) => {
+                                              setSyncActions({ ...syncActions, [index]: e.target.value });
+                                            }}
+                                            className="bg-transparent border border-current/20 text-[10px] uppercase tracking-widest px-2 py-1 focus:outline-none"
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Mirror to B</option>
+                                            <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Mirror to A</option>
+                                            <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Move to Scratch</option>
+                                            <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Ignore</option>
+                                          </select>
+                                        )}
                                         <div className="text-[10px] opacity-50 font-mono truncate">
                                           From: {diff.fileA ? 'Drive A' : 'Drive B'}
                                         </div>

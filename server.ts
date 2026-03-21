@@ -27,11 +27,29 @@ async function getFreeSpace(dirPath: string): Promise<number> {
   return 0;
 }
 
+// Helper to get a quick hash of the first 1MB (for fast comparison)
+async function getQuickHash(filePath: string): Promise<string> {
+  const CHUNK_SIZE = 1024 * 1024; // 1MB
+  const buffer = Buffer.alloc(CHUNK_SIZE);
+  const fd = await fs.promises.open(filePath, 'r');
+  try {
+    const { bytesRead } = await fd.read(buffer, 0, CHUNK_SIZE, 0);
+    const hash = crypto.createHash('sha256');
+    hash.update(buffer.subarray(0, bytesRead));
+    // Also include the file size in the quick hash to increase uniqueness
+    const stats = await fd.stat();
+    hash.update(stats.size.toString());
+    return hash.digest('hex');
+  } finally {
+    await fd.close();
+  }
+}
+
 // Helper to get file hash (SHA-256)
 function getFileHash(filePath: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
-    const stream = fs.createReadStream(filePath);
+    const stream = fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 }); // 1MB buffer
     stream.on('error', err => reject(err));
     stream.on('data', chunk => {
       if (isScanningStopped) {
@@ -311,29 +329,47 @@ async function startServer() {
       const duplicateGroups = [];
       const groupsToHash = Object.values(sizeGroups).filter(g => g.length > 1);
       const totalFilesToHash = groupsToHash.reduce((acc, g) => acc + g.length, 0);
-      let hashedCount = 0;
+      let processedCount = 0;
       
       // Only hash files that have the same size
       for (const files of groupsToHash) {
         if (isScanningStopped) throw new Error("Scan stopped by user");
-        const hashGroups: Record<string, any[]> = {};
+        
+        // Pass 1: Quick Hash (1MB)
+        const quickHashGroups: Record<string, any[]> = {};
         for (const f of files) {
           if (isScanningStopped) throw new Error("Scan stopped by user");
-          reportProgress(hashedCount, totalFilesToHash, `Hashing ${f.name}...`);
-          const hash = await getFileHash(f.path);
-          f.hash = hash;
-          if (!hashGroups[hash]) hashGroups[hash] = [];
-          hashGroups[hash].push(f);
-          hashedCount++;
+          reportProgress(processedCount, totalFilesToHash, `Quick checking ${f.name}...`);
+          const qHash = await getQuickHash(f.path);
+          if (!quickHashGroups[qHash]) quickHashGroups[qHash] = [];
+          quickHashGroups[qHash].push(f);
         }
-        
-        for (const hash in hashGroups) {
-          if (isScanningStopped) throw new Error("Scan stopped by user");
-          if (hashGroups[hash].length > 1) {
-            duplicateGroups.push({
-              hash,
-              files: hashGroups[hash]
-            });
+
+        // Pass 2: Full Hash (only for groups with > 1 file after quick hash)
+        for (const qHash in quickHashGroups) {
+          const qGroup = quickHashGroups[qHash];
+          if (qGroup.length > 1) {
+            const hashGroups: Record<string, any[]> = {};
+            for (const f of qGroup) {
+              if (isScanningStopped) throw new Error("Scan stopped by user");
+              reportProgress(processedCount, totalFilesToHash, `Full hashing ${f.name}...`);
+              const hash = await getFileHash(f.path);
+              f.hash = hash;
+              if (!hashGroups[hash]) hashGroups[hash] = [];
+              hashGroups[hash].push(f);
+              processedCount++;
+            }
+
+            for (const hash in hashGroups) {
+              if (hashGroups[hash].length > 1) {
+                duplicateGroups.push({
+                  hash,
+                  files: hashGroups[hash]
+                });
+              }
+            }
+          } else {
+            processedCount++;
           }
         }
       }
@@ -346,6 +382,31 @@ async function startServer() {
         const freeSpace = await getFreeSpace(directory);
         return res.json({ duplicateGroups: [], freeSpace, stopped: true });
       }
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // API: Rename or move a file (for syncing duplicate content)
+  app.post("/api/sync-rename-move", async (req, res) => {
+    try {
+      const { sourcePath, targetPath } = req.body;
+      if (!fs.existsSync(sourcePath)) {
+        return res.status(400).json({ error: "Source file does not exist" });
+      }
+
+      if (fs.existsSync(targetPath)) {
+        return res.status(400).json({ error: "Target file already exists. Move aborted to prevent data loss." });
+      }
+
+      const targetDir = path.dirname(targetPath);
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+
+      // Use the robust moveFile function which handles EXDEV and verification
+      await moveFile(sourcePath, targetPath, true);
+      res.json({ success: true });
+    } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
   });
@@ -388,6 +449,15 @@ async function startServer() {
 
       // Cache for hashes to avoid re-hashing
       const hashCache = new Map<string, string>();
+      const quickHashCache = new Map<string, string>();
+
+      const getCachedQuickHash = async (filePath: string) => {
+        if (quickHashCache.has(filePath)) return quickHashCache.get(filePath)!;
+        const hash = await getQuickHash(filePath);
+        quickHashCache.set(filePath, hash);
+        return hash;
+      };
+
       const getCachedHash = async (filePath: string) => {
         if (hashCache.has(filePath)) return hashCache.get(filePath)!;
         const hash = await getFileHash(filePath);
@@ -407,13 +477,19 @@ async function startServer() {
           let foundDuplicate = false;
           const candidates = targetBySize.get(sFile.size) || [];
           if (candidates.length > 0) {
-            const sHash = await getCachedHash(sFile.path);
+            // Quick check first
+            const sQuickHash = await getCachedQuickHash(sFile.path);
             for (const candidate of candidates) {
-              const cHash = await getCachedHash(candidate.path);
-              if (sHash === cHash) {
-                diffs.push({ type: 'duplicate-content', fileA: sFile, fileB: candidate, relPath });
-                foundDuplicate = true;
-                break;
+              const cQuickHash = await getCachedQuickHash(candidate.path);
+              if (sQuickHash === cQuickHash) {
+                // Potential match, do full hash to be sure
+                const sHash = await getCachedHash(sFile.path);
+                const cHash = await getCachedHash(candidate.path);
+                if (sHash === cHash) {
+                  diffs.push({ type: 'duplicate-content', fileA: sFile, fileB: candidate, relPath, presentOn: 'B' });
+                  foundDuplicate = true;
+                  break;
+                }
               }
             }
           }
@@ -428,9 +504,17 @@ async function startServer() {
           const tMtime = new Date(tFile.lastModified).getTime();
           
           if (sFile.size !== tFile.size || Math.abs(sMtime - tMtime) > 1000) {
-            const sHash = await getCachedHash(sFile.path);
-            const tHash = await getCachedHash(tFile.path);
-            if (sHash !== tHash) {
+            // Quick check first
+            const sQuickHash = await getCachedQuickHash(sFile.path);
+            const tQuickHash = await getCachedQuickHash(tFile.path);
+            if (sQuickHash === tQuickHash) {
+              const sHash = await getCachedHash(sFile.path);
+              const tHash = await getCachedHash(tFile.path);
+              if (sHash !== tHash) {
+                diffs.push({ type: 'different-version', fileA: sFile, fileB: tFile, relPath });
+                totalSizeToSync += sFile.size;
+              }
+            } else {
               diffs.push({ type: 'different-version', fileA: sFile, fileB: tFile, relPath });
               totalSizeToSync += sFile.size;
             }
@@ -446,14 +530,19 @@ async function startServer() {
           let foundDuplicate = false;
           const candidates = sourceBySize.get(tFile.size) || [];
           if (candidates.length > 0) {
-            const tHash = await getCachedHash(tFile.path);
+            // Quick check first
+            const tQuickHash = await getCachedQuickHash(tFile.path);
             for (const candidate of candidates) {
-              const cHash = await getCachedHash(candidate.path);
-              if (tHash === cHash) {
-                // We already found this duplicate in the source-to-target pass if it exists in both
-                // But we need to make sure we don't mark it as "missing-in-a"
-                foundDuplicate = true;
-                break;
+              const cQuickHash = await getCachedQuickHash(candidate.path);
+              if (tQuickHash === cQuickHash) {
+                const tHash = await getCachedHash(tFile.path);
+                const cHash = await getCachedHash(candidate.path);
+                if (tHash === cHash) {
+                  // Found content match on source
+                  diffs.push({ type: 'duplicate-content', fileA: candidate, fileB: tFile, relPath, presentOn: 'A' });
+                  foundDuplicate = true;
+                  break;
+                }
               }
             }
           }
