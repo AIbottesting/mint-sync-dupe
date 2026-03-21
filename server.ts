@@ -500,7 +500,7 @@ async function startServer() {
                 if (sHash === cHash) {
                   const relPathA = path.relative(sourceDir, sFile.path);
                   const relPathB = path.relative(targetDir, candidate.path);
-                  diffs.push({ type: 'duplicate-content', fileA: sFile, fileB: candidate, relPath: relPathA, relPathA, relPathB, presentOn: 'B' });
+                  diffs.push({ id: crypto.randomUUID(), type: 'duplicate-content', fileA: sFile, fileB: candidate, relPath: relPathA, relPathA, relPathB, presentOn: 'B' });
                   foundDuplicate = true;
                   break;
                 }
@@ -509,7 +509,7 @@ async function startServer() {
           }
           
           if (!foundDuplicate) {
-            diffs.push({ type: 'missing-in-b', fileA: sFile, relPath });
+            diffs.push({ id: crypto.randomUUID(), type: 'missing-in-b', fileA: sFile, relPath });
             totalSizeToSync += sFile.size;
           }
         } else {
@@ -525,7 +525,7 @@ async function startServer() {
               const sHash = await getCachedHash(sFile.path);
               const tHash = await getCachedHash(tFile.path);
               if (sHash !== tHash) {
-                diffs.push({ type: 'different-version', fileA: sFile, fileB: tFile, relPath });
+                diffs.push({ id: crypto.randomUUID(), type: 'different-version', fileA: sFile, fileB: tFile, relPath });
                 totalSizeToSync += sFile.size;
               }
             } else {
@@ -555,7 +555,7 @@ async function startServer() {
                   // Found content match on source
                   const relPathA = path.relative(sourceDir, candidate.path);
                   const relPathB = path.relative(targetDir, tFile.path);
-                  diffs.push({ type: 'duplicate-content', fileA: candidate, fileB: tFile, relPath: relPathB, relPathA, relPathB, presentOn: 'A' });
+                  diffs.push({ id: crypto.randomUUID(), type: 'duplicate-content', fileA: candidate, fileB: tFile, relPath: relPathB, relPathA, relPathB, presentOn: 'A' });
                   foundDuplicate = true;
                   break;
                 }
@@ -564,7 +564,7 @@ async function startServer() {
           }
 
           if (!foundDuplicate) {
-            diffs.push({ type: 'missing-in-a', fileB: tFile, relPath });
+            diffs.push({ id: crypto.randomUUID(), type: 'missing-in-a', fileB: tFile, relPath });
             totalSizeToSync += tFile.size;
           }
         }

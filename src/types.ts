@@ -15,6 +15,7 @@ export interface DuplicateGroup {
 }
 
 export interface SyncDiff {
+  id: string;
   type: 'missing-in-a' | 'missing-in-b' | 'different-version' | 'duplicate-content';
   fileA?: FileItem;
   fileB?: FileItem;

@@ -90,9 +90,10 @@ export default function App() {
 
   // Sync Tool State
   const [syncDiffs, setSyncDiffs] = useState<SyncDiff[]>([]);
-  const [syncActions, setSyncActions] = useState<Record<number, string>>({});
+  const [syncActions, setSyncActions] = useState<Record<string, string>>({});
   const [syncStats, setSyncStats] = useState<SyncStats | null>(null);
-  const [selectedDiffs, setSelectedDiffs] = useState<Set<number>>(new Set());
+  const [selectedDiffs, setSelectedDiffs] = useState<Set<string>>(new Set());
+  const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set());
   const [sourceDir, setSourceDir] = useState('');
   const [targetDir, setTargetDir] = useState('');
   const [scratchDiskPath, setScratchDiskPath] = useState('');
@@ -157,26 +158,29 @@ export default function App() {
     localStorage.setItem('darkMode', isDarkMode.toString());
   }, [isDarkMode]);
 
-  const groupedDiffs: Record<string, number[]> = useMemo(() => {
-    const groups: Record<string, number[]> = {};
-    syncDiffs.forEach((diff, index) => {
+  const groupedDiffs: Record<string, string[]> = useMemo(() => {
+    const groups: Record<string, string[]> = {};
+    syncDiffs.forEach((diff) => {
       const parts = diff.relPath.split('/');
       const parent = parts.length > 1 ? parts.slice(0, -1).join('/') : 'Root';
       if (!groups[parent]) groups[parent] = [];
-      groups[parent].push(index);
+      groups[parent].push(diff.id);
     });
     return groups;
   }, [syncDiffs]);
 
-  const toggleFolderSelection = (indices: number[]) => {
-    const selectableIndices = indices.filter(idx => syncDiffs[idx].type !== 'duplicate-content');
-    const allSelected = selectableIndices.length > 0 && selectableIndices.every(idx => selectedDiffs.has(idx));
+  const toggleFolderSelection = (ids: string[]) => {
+    const selectableIds = ids.filter(id => {
+      const d = syncDiffs.find(diff => diff.id === id);
+      return d && d.type !== 'duplicate-content';
+    });
+    const allSelected = selectableIds.length > 0 && selectableIds.every(id => selectedDiffs.has(id));
     const newSelection = new Set(selectedDiffs);
     
     if (allSelected) {
-      selectableIndices.forEach(idx => newSelection.delete(idx));
+      selectableIds.forEach(id => newSelection.delete(id));
     } else {
-      selectableIndices.forEach(idx => newSelection.add(idx));
+      selectableIds.forEach(id => newSelection.add(id));
     }
     setSelectedDiffs(newSelection);
   };
@@ -454,8 +458,9 @@ export default function App() {
 
   const handleSyncRenameMove = async (index: number, direction: 'AtoB' | 'BtoA') => {
     const diff = syncDiffs[index];
-    if (!diff || diff.type !== 'duplicate-content') return;
+    if (!diff || diff.type !== 'duplicate-content' || syncingIds.has(diff.id)) return;
 
+    setSyncingIds(prev => new Set(prev).add(diff.id));
     const targetFile = direction === 'AtoB' ? diff.fileB : diff.fileA;
     const targetBaseDir = direction === 'AtoB' ? targetDir : sourceDir;
     
@@ -464,7 +469,14 @@ export default function App() {
     const separator = targetBaseDir.includes('\\') ? '\\' : '/';
     const finalTargetPath = `${targetBaseDir}${targetBaseDir.endsWith('/') || targetBaseDir.endsWith('\\') ? '' : separator}${desiredRelPath}`;
 
-    if (!targetFile || !desiredRelPath) return;
+    if (!targetFile || !desiredRelPath) {
+      setSyncingIds(prev => {
+        const next = new Set(prev);
+        next.delete(diff.id);
+        return next;
+      });
+      return;
+    }
 
     try {
       const response = await fetch('/api/sync-rename-move', {
@@ -480,33 +492,36 @@ export default function App() {
       if (data.error) {
         alert(data.error);
       } else {
-        const newDiffs = [...syncDiffs];
-        newDiffs.splice(index, 1);
-        setSyncDiffs(newDiffs);
-        
-        const newActions = { ...syncActions };
-        delete newActions[index];
-        const shiftedActions: Record<number, string> = {};
-        Object.entries(newActions).forEach(([key, val]) => {
-          const k = parseInt(key);
-          const action = val as string;
-          if (k > index) {
-            shiftedActions[k - 1] = action;
-          } else {
-            shiftedActions[k] = action;
-          }
+        setSyncDiffs(prev => prev.filter(d => d.id !== diff.id));
+        setSyncActions(prev => {
+          const next = { ...prev };
+          delete next[diff.id];
+          return next;
         });
-        setSyncActions(shiftedActions);
+        setSelectedDiffs(prev => {
+          const next = new Set(prev);
+          next.delete(diff.id);
+          return next;
+        });
       }
     } catch (error) {
       console.error("Rename/Move failed:", error);
       alert("Failed to rename/move file.");
+    } finally {
+      setSyncingIds(prev => {
+        const next = new Set(prev);
+        next.delete(diff.id);
+        return next;
+      });
     }
   };
 
   const handleDeleteSyncFile = async (filePath: string, index: number) => {
+    const diff = syncDiffs[index];
+    if (!diff || syncingIds.has(diff.id)) return;
     if (!confirm(`Are you sure you want to permanently delete this file?\n\n${filePath}`)) return;
     
+    setSyncingIds(prev => new Set(prev).add(diff.id));
     try {
       const response = await fetch('/api/delete-files', {
         method: 'POST',
@@ -518,29 +533,27 @@ export default function App() {
       if (data.error) {
         alert(data.error);
       } else {
-        // Remove from syncDiffs
-        const newDiffs = [...syncDiffs];
-        newDiffs.splice(index, 1);
-        setSyncDiffs(newDiffs);
-        
-        // Adjust syncActions
-        const newActions = { ...syncActions };
-        delete newActions[index];
-        const shiftedActions: Record<number, string> = {};
-        Object.entries(newActions).forEach(([key, val]) => {
-          const k = parseInt(key);
-          const action = val as string;
-          if (k > index) {
-            shiftedActions[k - 1] = action;
-          } else {
-            shiftedActions[k] = action;
-          }
+        setSyncDiffs(prev => prev.filter(d => d.id !== diff.id));
+        setSyncActions(prev => {
+          const next = { ...prev };
+          delete next[diff.id];
+          return next;
         });
-        setSyncActions(shiftedActions);
+        setSelectedDiffs(prev => {
+          const next = new Set(prev);
+          next.delete(diff.id);
+          return next;
+        });
       }
     } catch (error) {
       console.error("Delete failed:", error);
       alert("Failed to delete file.");
+    } finally {
+      setSyncingIds(prev => {
+        const next = new Set(prev);
+        next.delete(diff.id);
+        return next;
+      });
     }
   };
 
@@ -548,8 +561,9 @@ export default function App() {
     if (selectedDiffs.size === 0) return;
     if (!confirm(`Are you sure you want to permanently delete ${selectedDiffs.size} selected files?`)) return;
     
-    const indices = (Array.from(selectedDiffs) as number[]).sort((a, b) => b - a);
-    const filePaths = indices.map(idx => syncDiffs[idx].fileA?.path || syncDiffs[idx].fileB?.path).filter(Boolean) as string[];
+    const idsToDelete = Array.from(selectedDiffs);
+    const diffsToDelete = syncDiffs.filter(d => idsToDelete.includes(d.id));
+    const filePaths = diffsToDelete.map(d => d.fileA?.path || d.fileB?.path).filter(Boolean) as string[];
     
     setProgress({ total: filePaths.length, current: 0, message: 'Deleting files...', isVisible: true });
     
@@ -566,11 +580,13 @@ export default function App() {
         });
       }
       
-      const newDiffs = [...syncDiffs];
-      indices.forEach(idx => newDiffs.splice(idx, 1));
-      setSyncDiffs(newDiffs);
+      setSyncDiffs(prev => prev.filter(d => !idsToDelete.includes(d.id)));
       setSelectedDiffs(new Set());
-      setSyncActions({});
+      setSyncActions(prev => {
+        const next = { ...prev };
+        idsToDelete.forEach((id: string) => delete next[id]);
+        return next;
+      });
       
       setProgress(prev => ({ ...prev, current: filePaths.length, message: 'Deletion complete' }));
       setTimeout(() => setProgress(prev => ({ ...prev, isVisible: false })), 2000);
@@ -642,9 +658,11 @@ export default function App() {
   };
 
   const handleExecuteSync = async () => {
-    const operations = Array.from(selectedDiffs).map(index => {
-      const diff = syncDiffs[index];
-      const actionStr = syncActions[index] || (diff.type === 'missing-in-b' ? 'Mirror to B' : 'Mirror to A');
+    const idsToSync = Array.from(selectedDiffs);
+    const operations = idsToSync.map(id => {
+      const diff = syncDiffs.find(d => d.id === id);
+      if (!diff) return null;
+      const actionStr = syncActions[id] || (diff.type === 'missing-in-b' ? 'Mirror to B' : 'Mirror to A');
       
       let action: 'mirror-to-b' | 'mirror-to-a' | 'move-to-scratch' | 'ignore' = 'ignore';
       if (actionStr === 'Mirror to B') action = 'mirror-to-b';
@@ -730,8 +748,10 @@ export default function App() {
       return;
     }
 
-    const operations = Array.from(selectedDiffs).map(index => {
-      const diff = syncDiffs[index];
+    const idsToStage = Array.from(selectedDiffs);
+    const operations = idsToStage.map(id => {
+      const diff = syncDiffs.find(d => d.id === id);
+      if (!diff) return null;
       const sourcePath = diff.fileA?.path || diff.fileB?.path;
       
       if (!sourcePath) return null;
@@ -766,9 +786,13 @@ export default function App() {
       alert("Files moved to scratch disk.");
       
       // Remove staged files from syncDiffs
-      const remainingDiffs = syncDiffs.filter((_, idx) => !selectedDiffs.has(idx));
-      setSyncDiffs(remainingDiffs);
+      setSyncDiffs(prev => prev.filter(d => !idsToStage.includes(d.id)));
       setSelectedDiffs(new Set());
+      setSyncActions(prev => {
+        const next = { ...prev };
+        idsToStage.forEach((id: string) => delete next[id]);
+        return next;
+      });
       fetchScratchFiles();
     } catch (error) {
       alert("Move failed.");
@@ -852,10 +876,10 @@ export default function App() {
     setSelectedFiles(newSelection);
   };
 
-  const toggleDiffSelection = (index: number) => {
+  const toggleDiffSelection = (id: string) => {
     const newSelection = new Set(selectedDiffs);
-    if (newSelection.has(index)) newSelection.delete(index);
-    else newSelection.add(index);
+    if (newSelection.has(id)) newSelection.delete(id);
+    else newSelection.add(id);
     setSelectedDiffs(newSelection);
   };
 
@@ -1610,13 +1634,16 @@ export default function App() {
                                 exit={{ height: 0, opacity: 0 }}
                                 className="overflow-hidden bg-white dark:bg-zinc-900"
                               >
-                                {indices.map((index) => {
-                                  const diff = syncDiffs[index];
+                                {indices.map((id) => {
+                                  const diff = syncDiffs.find(d => d.id === id);
+                                  if (!diff) return null;
+                                  const index = syncDiffs.indexOf(diff);
+                                  const isSyncing = syncingIds.has(diff.id);
                                   return (
                                     <div 
-                                      key={index}
-                                      className={`grid ${wrapPaths ? 'grid-cols-[40px_1fr_2fr_1fr_1.5fr]' : 'grid-cols-[40px_1fr_1fr_1fr_1.5fr]'} p-4 border-t border-[#141414]/10 dark:border-zinc-800 transition-colors hover:bg-mint-purple/10 group cursor-pointer ${selectedDiffs.has(index) ? 'bg-mint-purple/20 border-l-4 border-mint-purple' : ''}`}
-                                      onClick={() => toggleDiffSelection(index)}
+                                      key={diff.id}
+                                      className={`grid ${wrapPaths ? 'grid-cols-[40px_1fr_2fr_1fr_1.5fr]' : 'grid-cols-[40px_1fr_1fr_1fr_1.5fr]'} p-4 border-t border-[#141414]/10 dark:border-zinc-800 transition-colors hover:bg-mint-purple/10 group cursor-pointer ${selectedDiffs.has(diff.id) ? 'bg-mint-purple/20 border-l-4 border-mint-purple' : ''} ${isSyncing ? 'opacity-60 pointer-events-none' : ''}`}
+                                      onClick={() => toggleDiffSelection(diff.id)}
                                       onContextMenu={(e) => {
                                         e.preventDefault();
                                         const path = diff.fileA?.path || diff.fileB?.path;
@@ -1624,8 +1651,8 @@ export default function App() {
                                       }}
                                     >
                                       <div className="flex items-center justify-center">
-                                        <div className={`w-4 h-4 border border-current flex items-center justify-center ${selectedDiffs.has(index) ? 'bg-mint-purple border-mint-purple' : ''}`}>
-                                          {selectedDiffs.has(index) && <Check size={12} className="text-white" />}
+                                        <div className={`w-4 h-4 border border-current flex items-center justify-center ${selectedDiffs.has(diff.id) ? 'bg-mint-purple border-mint-purple' : ''}`}>
+                                          {selectedDiffs.has(diff.id) && <Check size={12} className="text-white" />}
                                         </div>
                                       </div>
                                       <div className="flex items-center gap-2">
@@ -1679,8 +1706,9 @@ export default function App() {
                                             }}
                                             className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-red-500 p-1 rounded"
                                             title="Delete File Permanently"
+                                            disabled={isSyncing}
                                           >
-                                            <Trash2 size={12} />
+                                            {isSyncing ? <RefreshCw size={12} className="animate-spin" /> : <Trash2 size={12} />}
                                           </button>
                                         </div>
                                         
@@ -1712,9 +1740,11 @@ export default function App() {
                                                 e.stopPropagation();
                                                 handleSyncRenameMove(index, 'AtoB');
                                               }}
-                                              className="text-[10px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-purple text-white hover:bg-mint-purple/80 transition-colors rounded"
+                                              className="text-[10px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-purple text-white hover:bg-mint-purple/80 transition-colors rounded flex items-center gap-2"
                                               title="Rename/Move on B to match A"
+                                              disabled={isSyncing}
                                             >
+                                              {isSyncing && <RefreshCw size={10} className="animate-spin" />}
                                               Sync A to B
                                             </button>
                                             <button 
@@ -1722,20 +1752,23 @@ export default function App() {
                                                 e.stopPropagation();
                                                 handleSyncRenameMove(index, 'BtoA');
                                               }}
-                                              className="text-[10px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-blue text-white hover:bg-mint-blue/80 transition-colors rounded"
+                                              className="text-[10px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-blue text-white hover:bg-mint-blue/80 transition-colors rounded flex items-center gap-2"
                                               title="Rename/Move on A to match B"
+                                              disabled={isSyncing}
                                             >
+                                              {isSyncing && <RefreshCw size={10} className="animate-spin" />}
                                               Sync B to A
                                             </button>
                                           </div>
                                         ) : (
                                           <select 
-                                            value={syncActions[index] || (diff.type === 'missing-in-b' ? 'Mirror to B' : 'Mirror to A')}
+                                            value={syncActions[diff.id] || (diff.type === 'missing-in-b' ? 'Mirror to B' : 'Mirror to A')}
                                             onChange={(e) => {
-                                              setSyncActions({ ...syncActions, [index]: e.target.value });
+                                              setSyncActions({ ...syncActions, [diff.id]: e.target.value });
                                             }}
                                             className="bg-transparent border border-current/20 text-[10px] uppercase tracking-widest px-2 py-1 focus:outline-none"
                                             onClick={(e) => e.stopPropagation()}
+                                            disabled={isSyncing}
                                           >
                                             <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Mirror to B</option>
                                             <option className="bg-[#E4E3E0] dark:bg-zinc-800 text-[#141414] dark:text-zinc-100">Mirror to A</option>
