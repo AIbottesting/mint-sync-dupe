@@ -1629,11 +1629,11 @@ export default function App() {
                                         </div>
                                       </div>
                                       <div className="flex items-center gap-2">
-                                        {diff.type === 'missing-in-b' && <span className="text-[10px] px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded-full font-bold uppercase">New for B</span>}
-                                        {diff.type === 'missing-in-a' && <span className="text-[10px] px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded-full font-bold uppercase">New for A</span>}
-                                        {diff.type === 'different-version' && <span className="text-[10px] px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 rounded-full font-bold uppercase">Modified</span>}
+                                        {diff.type === 'missing-in-b' && <span className="text-[11px] px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded-full font-bold uppercase">New for B</span>}
+                                        {diff.type === 'missing-in-a' && <span className="text-[11px] px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded-full font-bold uppercase">New for A</span>}
+                                        {diff.type === 'different-version' && <span className="text-[11px] px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 rounded-full font-bold uppercase">Modified</span>}
                                         {diff.type === 'duplicate-content' && (
-                                          <span className="text-[10px] px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300 rounded-full font-bold uppercase">
+                                          <span className="text-[11px] px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300 rounded-full font-bold uppercase">
                                             Already Present on {diff.presentOn || 'Other Drive'}
                                           </span>
                                         )}
@@ -1642,7 +1642,9 @@ export default function App() {
                                         <div className="flex items-center gap-2">
                                           <span className="font-medium truncate">{diff.fileA?.name || diff.fileB?.name}</span>
                                           {diff.type === 'duplicate-content' && (
-                                            <span className="text-[9px] text-emerald-600 dark:text-emerald-400 font-bold italic">(Content matches {diff.fileB?.name || diff.fileA?.name})</span>
+                                            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-bold italic">
+                                              (Duplicate content found on both drives)
+                                            </span>
                                           )}
                                           <button 
                                             onClick={(e) => {
@@ -1681,9 +1683,23 @@ export default function App() {
                                             <Trash2 size={12} />
                                           </button>
                                         </div>
-                                        <span className={`text-[10px] opacity-50 font-mono ${wrapPaths ? 'break-all whitespace-normal leading-tight mt-1' : 'truncate'}`}>
-                                          {diff.relPath}
-                                        </span>
+                                        
+                                        {diff.type === 'duplicate-content' ? (
+                                          <div className="mt-1 flex flex-col gap-0.5">
+                                            <div className={`flex gap-2 text-[11px] font-mono ${wrapPaths ? 'items-start' : 'items-center'}`}>
+                                              <span className="font-bold text-mint-purple opacity-70 w-14 shrink-0">DRIVE A:</span>
+                                              <span className={`opacity-60 ${wrapPaths ? 'break-all whitespace-normal leading-tight' : 'truncate'}`}>{diff.fileA?.path}</span>
+                                            </div>
+                                            <div className={`flex gap-2 text-[11px] font-mono ${wrapPaths ? 'items-start' : 'items-center'}`}>
+                                              <span className="font-bold text-mint-blue opacity-70 w-14 shrink-0">DRIVE B:</span>
+                                              <span className={`opacity-60 ${wrapPaths ? 'break-all whitespace-normal leading-tight' : 'truncate'}`}>{diff.fileB?.path}</span>
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <span className={`text-[11px] opacity-60 font-mono ${wrapPaths ? 'break-all whitespace-normal leading-tight mt-1' : 'truncate'}`}>
+                                            {diff.relPath}
+                                          </span>
+                                        )}
                                       </div>
                                       <div className="flex items-center font-mono text-xs">
                                         {formatBytes(diff.fileA?.size || diff.fileB?.size || 0)}
@@ -1696,7 +1712,7 @@ export default function App() {
                                                 e.stopPropagation();
                                                 handleSyncRenameMove(index, 'AtoB');
                                               }}
-                                              className="text-[9px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-purple text-white hover:bg-mint-purple/80 transition-colors rounded"
+                                              className="text-[10px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-purple text-white hover:bg-mint-purple/80 transition-colors rounded"
                                               title="Rename/Move on B to match A"
                                             >
                                               Sync B to A
@@ -1706,7 +1722,7 @@ export default function App() {
                                                 e.stopPropagation();
                                                 handleSyncRenameMove(index, 'BtoA');
                                               }}
-                                              className="text-[9px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-blue text-white hover:bg-mint-blue/80 transition-colors rounded"
+                                              className="text-[10px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-blue text-white hover:bg-mint-blue/80 transition-colors rounded"
                                               title="Rename/Move on A to match B"
                                             >
                                               Sync A to B
