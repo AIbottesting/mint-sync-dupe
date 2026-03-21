@@ -460,11 +460,11 @@ export default function App() {
     const targetBaseDir = direction === 'AtoB' ? targetDir : sourceDir;
     
     // The desired relative path is the one from the "source" of the sync
-    const desiredRelPath = diff.relPath;
+    const desiredRelPath = direction === 'AtoB' ? diff.relPathA : diff.relPathB;
     const separator = targetBaseDir.includes('\\') ? '\\' : '/';
     const finalTargetPath = `${targetBaseDir}${targetBaseDir.endsWith('/') || targetBaseDir.endsWith('\\') ? '' : separator}${desiredRelPath}`;
 
-    if (!targetFile) return;
+    if (!targetFile || !desiredRelPath) return;
 
     try {
       const response = await fetch('/api/sync-rename-move', {
@@ -1634,7 +1634,7 @@ export default function App() {
                                         {diff.type === 'different-version' && <span className="text-[11px] px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 rounded-full font-bold uppercase">Modified</span>}
                                         {diff.type === 'duplicate-content' && (
                                           <span className="text-[11px] px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300 rounded-full font-bold uppercase">
-                                            Already Present on {diff.presentOn || 'Other Drive'}
+                                            Duplicate Content
                                           </span>
                                         )}
                                       </div>
@@ -1715,7 +1715,7 @@ export default function App() {
                                               className="text-[10px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-purple text-white hover:bg-mint-purple/80 transition-colors rounded"
                                               title="Rename/Move on B to match A"
                                             >
-                                              Sync B to A
+                                              Sync A to B
                                             </button>
                                             <button 
                                               onClick={(e) => {
@@ -1725,7 +1725,7 @@ export default function App() {
                                               className="text-[10px] uppercase tracking-widest font-bold px-2 py-1 bg-mint-blue text-white hover:bg-mint-blue/80 transition-colors rounded"
                                               title="Rename/Move on A to match B"
                                             >
-                                              Sync A to B
+                                              Sync B to A
                                             </button>
                                           </div>
                                         ) : (
@@ -1744,7 +1744,7 @@ export default function App() {
                                           </select>
                                         )}
                                         <div className="text-[10px] opacity-50 font-mono truncate">
-                                          From: {diff.fileA ? 'Drive A' : 'Drive B'}
+                                          From: {diff.type === 'duplicate-content' ? 'Both Drives' : (diff.fileA ? 'Drive A' : 'Drive B')}
                                         </div>
                                       </div>
                                     </div>

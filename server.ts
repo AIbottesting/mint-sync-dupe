@@ -395,7 +395,19 @@ async function startServer() {
       }
 
       if (fs.existsSync(targetPath)) {
-        return res.status(400).json({ error: "Target file already exists. Move aborted to prevent data loss." });
+        if (sourcePath === targetPath) {
+          return res.json({ success: true, message: "File is already at the target path." });
+        }
+        
+        // If content is the same, we can just delete the source (it's a duplicate)
+        const srcHash = await getFileHash(sourcePath);
+        const destHash = await getFileHash(targetPath);
+        if (srcHash === destHash) {
+          await fs.promises.unlink(sourcePath);
+          return res.json({ success: true, message: "Target already has the same content. Deleted duplicate source." });
+        }
+
+        return res.status(400).json({ error: "Target file already exists with different content. Move aborted to prevent data loss." });
       }
 
       const targetDir = path.dirname(targetPath);
@@ -486,7 +498,9 @@ async function startServer() {
                 const sHash = await getCachedHash(sFile.path);
                 const cHash = await getCachedHash(candidate.path);
                 if (sHash === cHash) {
-                  diffs.push({ type: 'duplicate-content', fileA: sFile, fileB: candidate, relPath, presentOn: 'B' });
+                  const relPathA = path.relative(sourceDir, sFile.path);
+                  const relPathB = path.relative(targetDir, candidate.path);
+                  diffs.push({ type: 'duplicate-content', fileA: sFile, fileB: candidate, relPath: relPathA, relPathA, relPathB, presentOn: 'B' });
                   foundDuplicate = true;
                   break;
                 }
@@ -539,7 +553,9 @@ async function startServer() {
                 const cHash = await getCachedHash(candidate.path);
                 if (tHash === cHash) {
                   // Found content match on source
-                  diffs.push({ type: 'duplicate-content', fileA: candidate, fileB: tFile, relPath, presentOn: 'A' });
+                  const relPathA = path.relative(sourceDir, candidate.path);
+                  const relPathB = path.relative(targetDir, tFile.path);
+                  diffs.push({ type: 'duplicate-content', fileA: candidate, fileB: tFile, relPath: relPathB, relPathA, relPathB, presentOn: 'A' });
                   foundDuplicate = true;
                   break;
                 }

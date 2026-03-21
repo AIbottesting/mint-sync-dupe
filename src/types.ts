@@ -19,6 +19,8 @@ export interface SyncDiff {
   fileA?: FileItem;
   fileB?: FileItem;
   relPath: string;
+  relPathA?: string;
+  relPathB?: string;
   presentOn?: 'A' | 'B';
 }
 
